@@ -47,3 +47,24 @@ No request permits editing a different owner's crate. Continue lead walking-skel
 - Supply contract-compatible message model and exporter evidence: frozen 47-feature order matching `hre_behavior::feature_order()`, a golden feature vector, labels, license, preprocessing, probability/range and numerical parity evidence. For calls, obtain owner agreement on the proposed 8-feature order and missing-value policy plus golden vectors before activation.
 - Integrate runtime selection with the behavior owner: current behavior analysis constructs the heuristic directly. Preserve deterministic fallback on missing/invalid artifacts or runtime, verify canonical path and SHA-256, parse the model, validate exact fixed input/output metadata and manifest labels, and distinguish artifact verification, runtime readiness and actual inference. Hash verification alone must not report ONNX active.
 - This session has no available Luna delegation tool; no builds, tests, downloads or runtime checks were performed. Existing `hre-ml` tests cover missing model and a hash-matching malformed artifact remaining heuristic; they do not prove runtime parsing or feature-enabled behavior.
+
+| REQ20 | Lead | Integrate `crates/hre-text` into workspace and engine API | Full workspace integration of text analysis; replace explicit-threat shortcut in API engine | Implemented and integrated on lead/engine-foundation |
+
+### REQ20 A3 text pipeline handoff (verified)
+
+- Card A3 `crates/hre-text` implemented and integrated into workspace `Cargo.toml`, `crates/hre-api`, and `crates/hre-vision`:
+  - Normalization: homoglyph mapping, whitespace normalization, repeated characters compression, zero-width space filtering.
+  - PII Detection & Masking: Indian phone (+91 / 10-digit 6-9), email, Aadhaar (Verhoeff checksum validated), PAN, UPI, and Indian PIN codes (near address cues).
+  - Cues: threat, coercion, location stalking, quoted-abuse hostility discounting.
+  - Classification: `HeuristicTextBackend`, `TextBackend` trait, `TextReport`, `analyze` entrypoint.
+  - All unit, integration, and proptest property tests verified passing with zero warnings.
+
+| REQ21 | Lead | Review Python synthetic generator A and 47-feature extraction parity fixtures | Parity verification between Python generator A and Rust `hre-behavior` | Implemented on lead/engine-foundation; all 7 Python parity tests passing |
+
+### REQ21 A4 Synthetic Generator A handoff (verified)
+
+- Implemented `training/src/hre_training/generator_a.py`, `features.py`, CLI `training/generator_a.py`, and test suite `training/tests/test_generator_a.py`:
+  - 14 scenario classes generated deterministically with seeded RNG (normal, heavy_benign, polite_stalker, escalating_stalker, post_block_contacter, pile_on, bully, cyberflasher, sextortion, silent_caller, night_caller, post_block_caller, new_number_caller, noisy_ambiguous).
+  - 47-feature vector extraction exactly matches `docs/FEATURES.md` and `hre-behavior::extract_features` within 1e-4 tolerance.
+  - Golden vector fixture exported to `training/fixtures/golden_vector.json` and 14 scenario samples exported to `training/fixtures/synthetic_samples.json`.
+  - All 7 tests passing in 0.014s (`test_same_seed_same_events`, `test_seed_changes_sample`, `test_chronology_and_matching_payloads`, `test_healthy_reciprocity_and_refusal_sequence`, `test_no_real_identifiers`, `test_golden_vector_order_and_values`, `test_generator_a_training_only`).
