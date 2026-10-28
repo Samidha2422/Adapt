@@ -114,6 +114,52 @@ def verify(root):
         if declared != actual_outputs:
             fail(f"{identifier}: ONNX output metadata does not match task contract")
         print(f"{identifier}: SHA256 and ONNX output metadata verified")
+    verify_detector(root)
+
+
+DETECTOR_EXPECTED_HASH = "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff"
+
+
+def verify_detector(root):
+    detector_path = model_path(root, "ocr_detector.onnx")
+    hasher = hashlib.sha256()
+    with detector_path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    actual = hasher.hexdigest()
+    if actual.lower() != DETECTOR_EXPECTED_HASH.lower():
+        fail(f"ocr_detector: SHA256 mismatch (expected {DETECTOR_EXPECTED_HASH}, got {actual})")
+    try:
+        import onnx
+    except ImportError as exc:
+        raise ValueError("ONNX metadata verification requires the Python onnx package") from exc
+    graph = onnx.load_model(str(detector_path), load_external_data=False).graph
+
+    # Verify input tensor: 'x', float32, rank 4, channels=3
+    inputs = {inp.name: inp for inp in graph.input}
+    if "x" not in inputs:
+        fail("ocr_detector: expected input tensor 'x'")
+    x_tensor = inputs["x"].type.tensor_type
+    if x_tensor.elem_type != onnx.TensorProto.FLOAT:
+        fail("ocr_detector: input 'x' must be float32")
+    if len(x_tensor.shape.dim) != 4:
+        fail(f"ocr_detector: input 'x' must have rank 4 (NCHW), got {len(x_tensor.shape.dim)}")
+    if x_tensor.shape.dim[1].dim_value != 3:
+        fail(f"ocr_detector: input 'x' channel dimension must be 3, got {x_tensor.shape.dim[1].dim_value}")
+
+    # Verify output tensor: 'sigmoid_0.tmp_0', float32, rank 4, channels=1
+    outputs = {out.name: out for out in graph.output}
+    if "sigmoid_0.tmp_0" not in outputs:
+        fail("ocr_detector: expected output tensor 'sigmoid_0.tmp_0'")
+    out_tensor = outputs["sigmoid_0.tmp_0"].type.tensor_type
+    if out_tensor.elem_type != onnx.TensorProto.FLOAT:
+        fail("ocr_detector: output 'sigmoid_0.tmp_0' must be float32")
+    if len(out_tensor.shape.dim) != 4:
+        fail(f"ocr_detector: output 'sigmoid_0.tmp_0' must have rank 4 (NCHW), got {len(out_tensor.shape.dim)}")
+    if out_tensor.shape.dim[1].dim_value != 1:
+        fail(f"ocr_detector: output 'sigmoid_0.tmp_0' channel dimension must be 1, got {out_tensor.shape.dim[1].dim_value}")
+
+    print("ocr_detector: SHA256 and ONNX input/output contract verified")
 
 
 def main():

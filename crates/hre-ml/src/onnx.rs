@@ -16,6 +16,7 @@ use hre_vision::{
 use ndarray::{Array2, Array4};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::{Tensor, TensorElementType, ValueType};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -910,13 +911,307 @@ impl OnnxDeepfakeModel {
     }
 }
 
-/// Preprocess image for PP-OCRv4 text line recognition:
+/// Bounding box representation for detected text regions in original image coordinates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextBoundingBox {
+    pub x_min: u32,
+    pub y_min: u32,
+    pub x_max: u32,
+    pub y_max: u32,
+    pub score: f32,
+}
+
+impl TextBoundingBox {
+    pub fn new(x_min: u32, y_min: u32, x_max: u32, y_max: u32, score: f32) -> Self {
+        Self {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+            score,
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.x_max.saturating_sub(self.x_min)
+    }
+
+    pub fn height(&self) -> u32 {
+        self.y_max.saturating_sub(self.y_min)
+    }
+
+    pub fn area(&self) -> u32 {
+        self.width() * self.height()
+    }
+
+    pub fn iou(&self, other: &Self) -> f32 {
+        let x1 = self.x_min.max(other.x_min);
+        let y1 = self.y_min.max(other.y_min);
+        let x2 = self.x_max.min(other.x_max);
+        let y2 = self.y_max.min(other.y_max);
+
+        if x2 <= x1 || y2 <= y1 {
+            return 0.0;
+        }
+
+        let inter_area = ((x2 - x1) * (y2 - y1)) as f32;
+        let union_area = (self.area() + other.area()) as f32 - inter_area;
+        if union_area <= 0.0 {
+            0.0
+        } else {
+            inter_area / union_area
+        }
+    }
+}
+
+/// Sort bounding boxes into natural reading order:
+/// Groups boxes into horizontal lines, sorts lines top-to-bottom,
+/// and sorts boxes within each line left-to-right.
+pub fn sort_reading_order(boxes: &mut [TextBoundingBox]) {
+    if boxes.len() <= 1 {
+        return;
+    }
+
+    // 1. Initial sort by y_min
+    boxes.sort_by_key(|b| b.y_min);
+
+    // 2. Line clustering
+    let mut lines: Vec<Vec<TextBoundingBox>> = Vec::new();
+    for b in boxes.iter() {
+        let b_yc = (b.y_min + b.y_max) as f32 / 2.0;
+        let b_h = b.height() as f32;
+        let mut placed = false;
+
+        for line in lines.iter_mut() {
+            let line_avg_yc = line
+                .iter()
+                .map(|item| (item.y_min + item.y_max) as f32 / 2.0)
+                .sum::<f32>()
+                / line.len() as f32;
+            let line_avg_h =
+                line.iter().map(|item| item.height() as f32).sum::<f32>() / line.len() as f32;
+            let threshold = 0.5 * b_h.min(line_avg_h).max(4.0);
+
+            if (b_yc - line_avg_yc).abs() < threshold {
+                line.push(b.clone());
+                placed = true;
+                break;
+            }
+        }
+
+        if !placed {
+            lines.push(vec![b.clone()]);
+        }
+    }
+
+    // 3. Sort each line left-to-right, and lines top-to-bottom
+    lines.sort_by(|l1, l2| {
+        let y1 = l1.iter().map(|b| b.y_min).min().unwrap_or(0);
+        let y2 = l2.iter().map(|b| b.y_min).min().unwrap_or(0);
+        y1.cmp(&y2)
+    });
+
+    let mut result = Vec::with_capacity(boxes.len());
+    for line in lines.iter_mut() {
+        line.sort_by_key(|b| b.x_min);
+        result.append(line);
+    }
+
+    boxes.clone_from_slice(&result);
+}
+
+/// Preprocess image for PP-OCRv4 text detection (DBNet):
+/// Limits maximum side to 960, scales height and width to multiples of 32,
+/// and applies ImageNet normalization (mean [0.485, 0.456, 0.406], std [0.229, 0.224, 0.225]).
+pub fn preprocess_ocr_detector(
+    img: &image::DynamicImage,
+) -> Result<(Array4<f32>, (u32, u32)), VisionError> {
+    let (orig_w, orig_h) = (img.width(), img.height());
+    if orig_w < 16 || orig_h < 16 {
+        return Err(VisionError::InvalidDimensions);
+    }
+
+    let max_side = orig_w.max(orig_h);
+    let ratio = if max_side > 960 {
+        960.0 / max_side as f32
+    } else {
+        1.0
+    };
+
+    let scaled_w = (((orig_w as f32 * ratio / 32.0).round() as u32) * 32).clamp(32, 960);
+    let scaled_h = (((orig_h as f32 * ratio / 32.0).round() as u32) * 32).clamp(32, 960);
+
+    let resized = img
+        .resize_exact(scaled_w, scaled_h, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+
+    let mean = [0.485f32, 0.456f32, 0.406f32];
+    let std = [0.229f32, 0.224f32, 0.225f32];
+
+    let mut tensor = Array4::<f32>::zeros((1, 3, scaled_h as usize, scaled_w as usize));
+    for y in 0..scaled_h {
+        for x in 0..scaled_w {
+            let p = resized.get_pixel(x, y);
+            for c in 0..3 {
+                let v = p[c] as f32 / 255.0;
+                tensor[[0, c, y as usize, x as usize]] = (v - mean[c]) / std[c];
+            }
+        }
+    }
+
+    Ok((tensor, (scaled_w, scaled_h)))
+}
+
+/// Postprocess DBNet probability map:
+/// Binarizes with `thresh`, performs connected component flood fill,
+/// filters by `min_size` and `box_thresh`, unclips by `unclip_ratio`,
+/// projects to original coordinates, applies NMS, and sorts into reading order.
+#[allow(clippy::too_many_arguments)]
+pub fn postprocess_dbnet(
+    probs: &[f32],
+    scaled_w: u32,
+    scaled_h: u32,
+    orig_w: u32,
+    orig_h: u32,
+    thresh: f32,
+    box_thresh: f32,
+    min_size: u32,
+    unclip_ratio: f32,
+) -> Vec<TextBoundingBox> {
+    let w = scaled_w as usize;
+    let h = scaled_h as usize;
+    if probs.len() != w * h || w == 0 || h == 0 {
+        return Vec::new();
+    }
+
+    let mut visited = vec![false; w * h];
+    let mut raw_boxes = Vec::new();
+
+    let neighbors: [(isize, isize); 8] = [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ];
+
+    let mut queue = std::collections::VecDeque::new();
+
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if visited[idx] || probs[idx] <= thresh {
+                continue;
+            }
+
+            visited[idx] = true;
+            queue.push_back((x, y));
+
+            let mut min_x = x;
+            let mut max_x = x;
+            let mut min_y = y;
+            let mut max_y = y;
+            let mut sum_score = 0.0f32;
+            let mut pixel_count = 0usize;
+
+            while let Some((cx, cy)) = queue.pop_front() {
+                let p_idx = cy * w + cx;
+                sum_score += probs[p_idx];
+                pixel_count += 1;
+
+                min_x = min_x.min(cx);
+                max_x = max_x.max(cx);
+                min_y = min_y.min(cy);
+                max_y = max_y.max(cy);
+
+                for (dx, dy) in neighbors {
+                    let nx = cx as isize + dx;
+                    let ny = cy as isize + dy;
+                    if nx >= 0 && nx < w as isize && ny >= 0 && ny < h as isize {
+                        let n_idx = ny as usize * w + nx as usize;
+                        if !visited[n_idx] && probs[n_idx] > thresh {
+                            visited[n_idx] = true;
+                            queue.push_back((nx as usize, ny as usize));
+                        }
+                    }
+                }
+            }
+
+            if pixel_count < 8 {
+                continue;
+            }
+
+            let comp_w = (max_x - min_x + 1) as u32;
+            let comp_h = (max_y - min_y + 1) as u32;
+            if comp_w < min_size || comp_h < min_size {
+                continue;
+            }
+
+            let mean_score = sum_score / pixel_count as f32;
+            if mean_score < box_thresh {
+                continue;
+            }
+
+            // Unclip expansion
+            let comp_w_f = comp_w as f32;
+            let comp_h_f = comp_h as f32;
+            let dist = (comp_w_f * comp_h_f * unclip_ratio) / (2.0 * (comp_w_f + comp_h_f));
+
+            let exp_x1 = (min_x as f32 - dist).max(0.0);
+            let exp_x2 = (max_x as f32 + dist).min((w - 1) as f32);
+            let exp_y1 = (min_y as f32 - dist).max(0.0);
+            let exp_y2 = (max_y as f32 + dist).min((h - 1) as f32);
+
+            let sx = orig_w as f32 / scaled_w as f32;
+            let sy = orig_h as f32 / scaled_h as f32;
+
+            let orig_x1 = ((exp_x1 * sx).round() as u32).min(orig_w.saturating_sub(1));
+            let orig_x2 = ((exp_x2 * sx).round() as u32).min(orig_w);
+            let orig_y1 = ((exp_y1 * sy).round() as u32).min(orig_h.saturating_sub(1));
+            let orig_y2 = ((exp_y2 * sy).round() as u32).min(orig_h);
+
+            if orig_x2 > orig_x1 + 3 && orig_y2 > orig_y1 + 3 {
+                raw_boxes.push(TextBoundingBox::new(
+                    orig_x1, orig_y1, orig_x2, orig_y2, mean_score,
+                ));
+            }
+        }
+    }
+
+    raw_boxes.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut filtered_boxes: Vec<TextBoundingBox> = Vec::new();
+
+    for candidate in raw_boxes {
+        let mut keep = true;
+        for kept in &filtered_boxes {
+            if candidate.iou(kept) > 0.4 {
+                keep = false;
+                break;
+            }
+        }
+        if keep {
+            filtered_boxes.push(candidate);
+        }
+    }
+
+    sort_reading_order(&mut filtered_boxes);
+    filtered_boxes
+}
+
+/// Preprocess a dynamic image line crop for PP-OCRv4 text recognition:
 /// Resizes preserving aspect ratio to height 48 (clamped to max width 320),
 /// right-pads to 320 with white/background (1.0 in normalized space),
 /// and normalizes to [-1.0, 1.0] in NCHW [1, 3, 48, 320].
-pub fn preprocess_ocr_line(bytes: &[u8], declared_mime: &str) -> Result<Array4<f32>, VisionError> {
-    let _meta = validate_image(bytes, declared_mime)?;
-    let dynamic_img = image::load_from_memory(bytes).map_err(|_| VisionError::TruncatedImage)?;
+pub fn preprocess_image_line(
+    dynamic_img: &image::DynamicImage,
+) -> Result<Array4<f32>, VisionError> {
     let (orig_w, orig_h) = (dynamic_img.width(), dynamic_img.height());
     if orig_w == 0 || orig_h == 0 {
         return Err(VisionError::InvalidDimensions);
@@ -939,6 +1234,69 @@ pub fn preprocess_ocr_line(bytes: &[u8], declared_mime: &str) -> Result<Array4<f
         }
     }
     Ok(tensor)
+}
+
+pub fn preprocess_ocr_line(bytes: &[u8], declared_mime: &str) -> Result<Array4<f32>, VisionError> {
+    let _meta = validate_image(bytes, declared_mime)?;
+    let dynamic_img = image::load_from_memory(bytes).map_err(|_| VisionError::TruncatedImage)?;
+    preprocess_image_line(&dynamic_img)
+}
+
+/// Thread-safe ONNX model wrapper for PP-OCRv4 text detection (DBNet).
+pub struct OnnxOcrDetector {
+    session: Mutex<Session>,
+}
+
+impl std::fmt::Debug for OnnxOcrDetector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxOcrDetector").finish_non_exhaustive()
+    }
+}
+
+impl OnnxOcrDetector {
+    pub fn load(model_path: &Path) -> Result<Self, ModelError> {
+        let env = get_or_init_ort_env()?;
+        let session = Session::builder(env)
+            .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| ModelError::Inference(format!("optimization level error: {e}")))?
+            .commit_from_file(model_path)
+            .map_err(|e| {
+                ModelError::Inference(format!(
+                    "failed to load ONNX OCR detector model from {}: {e}",
+                    model_path.display()
+                ))
+            })?;
+        Ok(Self {
+            session: Mutex::new(session),
+        })
+    }
+
+    pub fn detect(&self, img: &image::DynamicImage) -> Result<Vec<TextBoundingBox>, ModelError> {
+        let (tensor, (scaled_w, scaled_h)) = preprocess_ocr_detector(img)
+            .map_err(|e| ModelError::Inference(format!("OCR detector preprocess error: {e}")))?;
+        let (orig_w, orig_h) = (img.width(), img.height());
+
+        let input_tensor = Tensor::from_array(tensor)
+            .map_err(|e| ModelError::Inference(format!("failed to create detector tensor: {e}")))?;
+
+        let mut session = self.session.lock().map_err(|_| {
+            ModelError::Inference("ONNX OCR detector session mutex poisoned".into())
+        })?;
+
+        let outputs = session
+            .run(ort::inputs!["x" => input_tensor])
+            .map_err(|e| ModelError::Inference(format!("OCR detector inference run error: {e}")))?;
+
+        let probs = outputs["sigmoid_0.tmp_0"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| {
+                ModelError::Inference(format!("failed to extract sigmoid_0.tmp_0: {e}"))
+            })?;
+        let slice = probs.1;
+        let boxes = postprocess_dbnet(slice, scaled_w, scaled_h, orig_w, orig_h, 0.3, 0.5, 3, 1.6);
+        Ok(boxes)
+    }
 }
 
 /// Thread-safe ONNX model wrapper for PP-OCRv4 text line recognition.
@@ -1085,19 +1443,32 @@ fn decode_ctc(probs: &[f32], timesteps: usize, vocab: &[String]) -> (String, f64
 }
 
 /// Pluggable ONNX OCR backend implementing `hre_vision::OcrBackend`.
+/// Supports full document multi-line detection (PP-OCRv4 DBNet),
+/// region cropping, line recognition (PP-OCRv4 rec), and CTC decoding.
 #[derive(Debug, Clone)]
 pub struct OnnxOcrBackend {
+    detector: Option<Arc<OnnxOcrDetector>>,
     model: Option<Arc<OnnxOcrModel>>,
     fallback: HeuristicOcrBackend,
 }
 
 impl OnnxOcrBackend {
     pub fn new(model: Option<Arc<OnnxOcrModel>>, fallback: HeuristicOcrBackend) -> Self {
-        Self { model, fallback }
+        Self {
+            detector: None,
+            model,
+            fallback,
+        }
+    }
+
+    pub fn with_detector(mut self, detector: Option<Arc<OnnxOcrDetector>>) -> Self {
+        self.detector = detector;
+        self
     }
 
     pub fn fallback_only(fallback: HeuristicOcrBackend) -> Self {
         Self {
+            detector: None,
             model: None,
             fallback,
         }
@@ -1108,8 +1479,49 @@ impl OnnxOcrBackend {
         vocab_path: &Path,
         fallback: HeuristicOcrBackend,
     ) -> Result<Self, ModelError> {
+        let detector = if let Some(parent) = model_path.parent() {
+            let det_path = parent.join("ocr_detector.onnx");
+            if det_path.exists() {
+                match OnnxOcrDetector::load(&det_path) {
+                    Ok(d) => Some(Arc::new(d)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load ONNX OCR detector ({e}); proceeding with line recognizer only"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let model = Arc::new(OnnxOcrModel::load(model_path, vocab_path)?);
-        Ok(Self::new(Some(model), fallback))
+        Ok(Self {
+            detector,
+            model: Some(model),
+            fallback,
+        })
+    }
+
+    pub fn load_pipeline(
+        detector_path: &Path,
+        model_path: &Path,
+        vocab_path: &Path,
+        fallback: HeuristicOcrBackend,
+    ) -> Result<Self, ModelError> {
+        let detector = if detector_path.exists() {
+            Some(Arc::new(OnnxOcrDetector::load(detector_path)?))
+        } else {
+            None
+        };
+        let model = Arc::new(OnnxOcrModel::load(model_path, vocab_path)?);
+        Ok(Self {
+            detector,
+            model: Some(model),
+            fallback,
+        })
     }
 
     pub fn process_image(
@@ -1119,7 +1531,198 @@ impl OnnxOcrBackend {
     ) -> Result<OcrReport, VisionError> {
         let _meta = validate_image(bytes, declared_mime)?;
 
-        // 1. Try real pixel OCR recognition first if model is loaded
+        // 1. Try detector + recognizer pipeline if both are available
+        if let (Some(detector), Some(model)) = (&self.detector, &self.model) {
+            if let Ok(dynamic_img) = image::load_from_memory(bytes) {
+                if let Ok(boxes) = detector.detect(&dynamic_img) {
+                    if !boxes.is_empty() {
+                        let mut recognized_lines: Vec<(String, f64, TextBoundingBox)> = Vec::new();
+                        for b in &boxes {
+                            let crop_w = b.width().min(dynamic_img.width().saturating_sub(b.x_min));
+                            let crop_h =
+                                b.height().min(dynamic_img.height().saturating_sub(b.y_min));
+                            if crop_w < 4 || crop_h < 4 {
+                                continue;
+                            }
+                            let crop = dynamic_img.crop_imm(b.x_min, b.y_min, crop_w, crop_h);
+                            if let Ok(tensor) = preprocess_image_line(&crop) {
+                                if let Ok((line_text, line_conf)) = model.predict(tensor) {
+                                    let trimmed = line_text.trim();
+                                    if !trimmed.is_empty() {
+                                        recognized_lines.push((
+                                            trimmed.to_string(),
+                                            line_conf,
+                                            b.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
+                        if !recognized_lines.is_empty() {
+                            let raw_text = recognized_lines
+                                .iter()
+                                .map(|(t, _, _)| t.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let avg_conf = recognized_lines.iter().map(|(_, c, _)| *c).sum::<f64>()
+                                / recognized_lines.len() as f64;
+
+                            let report = hre_text::analyze(&raw_text)
+                                .map_err(|err| VisionError::Ocr(err.to_string()))?;
+                            let masked_text = report.masked_text.clone();
+                            let mut details = BTreeMap::new();
+                            details.insert(
+                                "ocr_text_masked".into(),
+                                serde_json::json!(masked_text.clone()),
+                            );
+                            details.insert("confidence".into(), serde_json::json!(avg_conf));
+                            details
+                                .insert("detector_model".into(), serde_json::json!("PP-OCRv4_det"));
+                            details.insert(
+                                "recognizer_model".into(),
+                                serde_json::json!("PP-OCRv4_rec"),
+                            );
+                            details.insert(
+                                "box_count".into(),
+                                serde_json::json!(recognized_lines.len()),
+                            );
+                            let boxes_json: Vec<serde_json::Value> = recognized_lines
+                                .iter()
+                                .map(|(txt, conf, b)| {
+                                    serde_json::json!({
+                                        "text": txt,
+                                        "confidence": conf,
+                                        "x_min": b.x_min,
+                                        "y_min": b.y_min,
+                                        "x_max": b.x_max,
+                                        "y_max": b.y_max,
+                                    })
+                                })
+                                .collect();
+                            details.insert("detected_boxes".into(), serde_json::json!(boxes_json));
+
+                            let score = report
+                                .primary_signal
+                                .score
+                                .max(report.toxicity)
+                                .max(report.threat)
+                                .max(report.sexual_explicit);
+                            let recommended_action = if score >= 0.5 {
+                                Some(hre_core::Action::BlurMedia)
+                            } else {
+                                None
+                            };
+
+                            return Ok(OcrReport {
+                                raw_text,
+                                masked_text,
+                                text_report: Some(report),
+                                signal: Signal {
+                                    score,
+                                    label: if score >= 0.5 {
+                                        "ocr_abuse".into()
+                                    } else {
+                                        "ocr_text".into()
+                                    },
+                                    status: Status::Built,
+                                    backend: Backend::Onnx,
+                                    confidence: avg_conf,
+                                    details,
+                                },
+                                recommended_action,
+                                simulated: false,
+                                degraded: Vec::new(),
+                            });
+                        }
+                    } else {
+                        // Detector ran successfully and found no text regions
+                        // Check if it might be a single-line tight crop where detector didn't find margins
+                        let (w, h) = (dynamic_img.width(), dynamic_img.height());
+                        let is_tight_line = h <= 64 || (w as f32 / h as f32) >= 2.5;
+                        if is_tight_line {
+                            if let Ok((raw_text, conf)) = model.recognize(bytes, declared_mime) {
+                                if !raw_text.trim().is_empty() && conf >= 0.5 {
+                                    let report = hre_text::analyze(&raw_text)
+                                        .map_err(|err| VisionError::Ocr(err.to_string()))?;
+                                    let masked_text = report.masked_text.clone();
+                                    let mut details = BTreeMap::new();
+                                    details.insert(
+                                        "ocr_text_masked".into(),
+                                        serde_json::json!(masked_text.clone()),
+                                    );
+                                    details.insert("confidence".into(), serde_json::json!(conf));
+                                    details.insert(
+                                        "recognizer_model".into(),
+                                        serde_json::json!("PP-OCRv4_rec"),
+                                    );
+                                    details.insert("box_count".into(), serde_json::json!(1));
+
+                                    let score = report
+                                        .primary_signal
+                                        .score
+                                        .max(report.toxicity)
+                                        .max(report.threat)
+                                        .max(report.sexual_explicit);
+                                    let recommended_action = if score >= 0.5 {
+                                        Some(hre_core::Action::BlurMedia)
+                                    } else {
+                                        None
+                                    };
+
+                                    return Ok(OcrReport {
+                                        raw_text,
+                                        masked_text,
+                                        text_report: Some(report),
+                                        signal: Signal {
+                                            score,
+                                            label: if score >= 0.5 {
+                                                "ocr_abuse".into()
+                                            } else {
+                                                "ocr_text".into()
+                                            },
+                                            status: Status::Built,
+                                            backend: Backend::Onnx,
+                                            confidence: conf,
+                                            details,
+                                        },
+                                        recommended_action,
+                                        simulated: false,
+                                        degraded: Vec::new(),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Genuine image with no text
+                        let mut details = BTreeMap::new();
+                        details.insert("ocr_text_masked".into(), serde_json::json!(""));
+                        details.insert("confidence".into(), serde_json::json!(1.0));
+                        details.insert("detector_model".into(), serde_json::json!("PP-OCRv4_det"));
+                        details.insert("box_count".into(), serde_json::json!(0));
+
+                        return Ok(OcrReport {
+                            raw_text: String::new(),
+                            masked_text: String::new(),
+                            text_report: None,
+                            signal: Signal {
+                                score: 0.0,
+                                label: "no_text_detected".into(),
+                                status: Status::Built,
+                                backend: Backend::Onnx,
+                                confidence: 1.0,
+                                details,
+                            },
+                            recommended_action: None,
+                            simulated: false,
+                            degraded: Vec::new(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. Recognizer-only path (if detector is disabled/missing)
         if let Some(model) = &self.model {
             if let Ok((raw_text, conf)) = model.recognize(bytes, declared_mime) {
                 if !raw_text.trim().is_empty() && conf >= 0.5 {
@@ -1132,7 +1735,7 @@ impl OnnxOcrBackend {
                         serde_json::json!(masked_text.clone()),
                     );
                     details.insert("confidence".into(), serde_json::json!(conf));
-                    details.insert("model_id".into(), serde_json::json!("PP-OCRv4_rec"));
+                    details.insert("recognizer_model".into(), serde_json::json!("PP-OCRv4_rec"));
 
                     let score = report
                         .primary_signal
@@ -1170,18 +1773,16 @@ impl OnnxOcrBackend {
             }
         }
 
-        // 2. Fall back to heuristic backend (extracts container metadata / fixtures)
+        // 3. Fall back to heuristic backend (extracts container metadata / fixtures)
         self.fallback.process_image(bytes, declared_mime)
     }
 }
 
 impl OcrBackend for OnnxOcrBackend {
     fn recognize(&self, image_bytes: &[u8], declared_mime: &str) -> Result<String, VisionError> {
-        if let Some(model) = &self.model {
-            if let Ok((text, conf)) = model.recognize(image_bytes, declared_mime) {
-                if !text.trim().is_empty() && conf >= 0.5 {
-                    return Ok(text);
-                }
+        if let Ok(report) = self.process_image(image_bytes, declared_mime) {
+            if !report.raw_text.is_empty() {
+                return Ok(report.raw_text);
             }
         }
         self.fallback.recognize(image_bytes, declared_mime)
@@ -1865,7 +2466,154 @@ mod tests {
 
         assert!(OnnxDeepfakeModel::load(&corrupt_path).is_err());
         assert!(OnnxOcrModel::load(&corrupt_path, &corrupt_path).is_err());
+        assert!(OnnxOcrDetector::load(&corrupt_path).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_onnx_ocr_detector_multiline_boxes() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let det_path = models_dir.join("ocr_detector.onnx");
+        if !det_path.exists() {
+            return;
+        }
+        let fixture_path = models_dir.join("_test_fixtures").join("ocr_multiline.png");
+        if !fixture_path.exists() {
+            return;
+        }
+        let detector = OnnxOcrDetector::load(&det_path).expect("load ocr detector");
+        let img = image::open(&fixture_path).expect("open multiline image");
+        let boxes = detector.detect(&img).expect("detect multiline text boxes");
+
+        assert!(
+            boxes.len() >= 2,
+            "expected at least 2 text lines detected, got {}",
+            boxes.len()
+        );
+        for b in &boxes {
+            assert!(b.width() > 10, "box width should be substantial: {:?}", b);
+            assert!(b.height() > 5, "box height should be substantial: {:?}", b);
+            assert!(b.score >= 0.5, "box score should meet threshold: {:?}", b);
+        }
+        // Verify reading order: y coordinates increase
+        for i in 1..boxes.len() {
+            assert!(
+                boxes[i].y_min >= boxes[i - 1].y_min || boxes[i].x_min >= boxes[i - 1].x_min,
+                "boxes should be sorted in reading order"
+            );
+        }
+    }
+
+    #[test]
+    fn test_onnx_ocr_backend_multiline_end_to_end() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let rec_path = models_dir.join("ocr_recognizer.onnx");
+        let vocab_path = models_dir.join("ocr_vocab.json");
+        let det_path = models_dir.join("ocr_detector.onnx");
+        if !rec_path.exists() || !vocab_path.exists() || !det_path.exists() {
+            return;
+        }
+        let fallback = HeuristicOcrBackend::new();
+        let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
+            .expect("load onnx ocr pipeline");
+
+        let fixture_path = models_dir.join("_test_fixtures").join("ocr_multiline.png");
+        if !fixture_path.exists() {
+            return;
+        }
+        let bytes = std::fs::read(&fixture_path).expect("read fixture");
+        let report = backend
+            .process_image(&bytes, "image/png")
+            .expect("process multiline ocr");
+
+        assert_eq!(report.signal.status, Status::Built);
+        assert_eq!(report.signal.backend, Backend::Onnx);
+        assert!(!report.simulated);
+        assert!(!report.raw_text.is_empty());
+        assert!(
+            report.raw_text.contains("HARASS")
+                || report.raw_text.contains("INCIDENT")
+                || report.raw_text.contains("REPORT")
+                || report.raw_text.contains("ALONE"),
+            "recognized text did not match expected keywords: {}",
+            report.raw_text
+        );
+        assert!(report.signal.confidence > 0.6);
+        assert!(report.signal.score >= 0.0);
+    }
+
+    #[test]
+    fn test_onnx_ocr_backend_single_line_compatibility() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let rec_path = models_dir.join("ocr_recognizer.onnx");
+        let vocab_path = models_dir.join("ocr_vocab.json");
+        let det_path = models_dir.join("ocr_detector.onnx");
+        if !rec_path.exists() || !vocab_path.exists() {
+            return;
+        }
+        let fallback = HeuristicOcrBackend::new();
+        let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
+            .expect("load onnx ocr pipeline");
+
+        let fixture_path = models_dir
+            .join("_test_fixtures")
+            .join("ocr_single_line.png");
+        if !fixture_path.exists() {
+            return;
+        }
+        let bytes = std::fs::read(&fixture_path).expect("read single-line fixture");
+        let report = backend
+            .process_image(&bytes, "image/png")
+            .expect("process single-line ocr");
+
+        assert_eq!(report.signal.status, Status::Built);
+        assert_eq!(report.signal.backend, Backend::Onnx);
+        assert!(!report.simulated);
+        assert!(
+            report.raw_text.contains("STOP") || report.raw_text.contains("CALLING"),
+            "single line text mismatch: {}",
+            report.raw_text
+        );
+    }
+
+    #[test]
+    fn test_onnx_ocr_backend_no_text_image() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let rec_path = models_dir.join("ocr_recognizer.onnx");
+        let vocab_path = models_dir.join("ocr_vocab.json");
+        let det_path = models_dir.join("ocr_detector.onnx");
+        if !rec_path.exists() || !vocab_path.exists() || !det_path.exists() {
+            return;
+        }
+        let fallback = HeuristicOcrBackend::new();
+        let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
+            .expect("load onnx ocr pipeline");
+
+        let fixture_path = models_dir.join("_test_fixtures").join("ocr_no_text.png");
+        if !fixture_path.exists() {
+            return;
+        }
+        let bytes = std::fs::read(&fixture_path).expect("read no-text fixture");
+        let report = backend
+            .process_image(&bytes, "image/png")
+            .expect("process no-text image");
+
+        assert_eq!(report.signal.status, Status::Built);
+        assert_eq!(report.signal.backend, Backend::Onnx);
+        assert_eq!(report.raw_text, "");
+        assert_eq!(report.signal.score, 0.0);
     }
 }

@@ -259,7 +259,7 @@ async fn test_real_api_ocr_pixel_recognition_single_and_multiline() {
         );
     }
 
-    // 2. Multi-line document: tests behavior when arbitrary full document is passed to text line recognizer
+    // 2. Multi-line document: tests full detection + cropping + recognition pipeline
     let multi_path = models_dir.join("_test_fixtures/ocr_multiline.png");
     if multi_path.exists() {
         let multi_bytes = std::fs::read(&multi_path).unwrap();
@@ -268,14 +268,102 @@ async fn test_real_api_ocr_pixel_recognition_single_and_multiline() {
             upload_image(&app, &event_multi, &multi_bytes, "image/png").await;
 
         assert_eq!(status, StatusCode::OK);
-        // Record output behavior honestly: line recognizer without detector squashes multi-line height into 48px
+        assert_eq!(res_multi["signals"]["ocr"]["status"], "built");
+        assert_eq!(res_multi["signals"]["ocr"]["backend"], "onnx");
+        assert_eq!(res_multi["simulated"], false);
+        let box_count = res_multi["signals"]["ocr"]["details"]["box_count"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(
+            box_count >= 2,
+            "Expected at least 2 detected boxes, got {box_count}"
+        );
+        let ocr_score = res_multi["signals"]["ocr"]["score"].as_f64().unwrap_or(0.0);
+        assert!(
+            ocr_score >= 0.0,
+            "Expected non-negative risk score, got {ocr_score}"
+        );
+        let conf = res_multi["signals"]["ocr"]["confidence"]
+            .as_f64()
+            .unwrap_or(0.0);
+        assert!(
+            conf >= 0.50,
+            "Expected OCR recognition confidence >= 0.50, got {conf}"
+        );
         println!(
-            "OCR Multi-line Document tested in {}ms: ocr_status={}, score={}",
-            dur_multi, res_multi["signals"]["ocr"]["status"], res_multi["signals"]["ocr"]["score"]
+            "OCR Multi-line Document passed (boxes={}, score={:.3}) in {}ms",
+            box_count, ocr_score, dur_multi
         );
     }
 
-    // 3. Blank / non-text image: tests graceful fallback without panic
+    // 2b. Longer multi-line document with warning and harassment cues
+    let long_path = models_dir.join("_test_fixtures/ocr_long_multiline.png");
+    if long_path.exists() {
+        let long_bytes = std::fs::read(&long_path).unwrap();
+        let event_long = envelope("image/png");
+        let (status, res_long, dur_long) =
+            upload_image(&app, &event_long, &long_bytes, "image/png").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(res_long["signals"]["ocr"]["status"], "built");
+        assert_eq!(res_long["signals"]["ocr"]["backend"], "onnx");
+        let box_count = res_long["signals"]["ocr"]["details"]["box_count"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(
+            box_count >= 3,
+            "Expected at least 3 detected boxes in 5-line page, got {box_count}"
+        );
+        println!(
+            "OCR Long Multi-line Document passed (boxes={}) in {}ms",
+            box_count, dur_long
+        );
+    }
+
+    // 2c. Image with no visible text (smooth/gradient canvas)
+    let no_text_path = models_dir.join("_test_fixtures/ocr_no_text.png");
+    if no_text_path.exists() {
+        let no_text_bytes = std::fs::read(&no_text_path).unwrap();
+        let event_no_text = envelope("image/png");
+        let (status, res_no_text, dur_no_text) =
+            upload_image(&app, &event_no_text, &no_text_bytes, "image/png").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(res_no_text["signals"]["ocr"]["status"], "built");
+        assert_eq!(res_no_text["signals"]["ocr"]["backend"], "onnx");
+        assert_eq!(res_no_text["signals"]["ocr"]["score"], 0.0);
+        let box_count = res_no_text["signals"]["ocr"]["details"]["box_count"]
+            .as_u64()
+            .unwrap_or(1);
+        assert_eq!(box_count, 0, "Expected 0 detected boxes in no-text image");
+        println!("OCR No-text image passed in {}ms", dur_no_text);
+    }
+
+    // 2d. Document with varied line widths
+    let varied_path = models_dir.join("_test_fixtures/ocr_varied_widths.png");
+    if varied_path.exists() {
+        let varied_bytes = std::fs::read(&varied_path).unwrap();
+        let event_varied = envelope("image/png");
+        let (status, res_varied, dur_varied) =
+            upload_image(&app, &event_varied, &varied_bytes, "image/png").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(res_varied["signals"]["ocr"]["status"], "built");
+        assert_eq!(res_varied["signals"]["ocr"]["backend"], "onnx");
+        let box_count = res_varied["signals"]["ocr"]["details"]["box_count"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(
+            box_count >= 2,
+            "Expected at least 2 boxes in varied widths document, got {box_count}"
+        );
+        println!(
+            "OCR Varied Widths passed (boxes={}) in {}ms",
+            box_count, dur_varied
+        );
+    }
+
+    // 3. Blank / non-text tiny image: tests graceful fallback without panic
     let blank_bytes = valid_test_png();
     let event_blank = envelope("image/png");
     let (status, res_blank, dur_blank) =

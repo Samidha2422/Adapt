@@ -2,8 +2,8 @@
 pub mod onnx;
 pub use onnx::{
     OnnxAudioBackend, OnnxBehaviorModel, OnnxDeepfakeModel, OnnxImageBackend, OnnxNsfwModel,
-    OnnxOcrBackend, OnnxOcrModel, OnnxTextBackend, OnnxTextModel, OnnxWhisperModel,
-    TEXT_MODEL_LABELS,
+    OnnxOcrBackend, OnnxOcrDetector, OnnxOcrModel, OnnxTextBackend, OnnxTextModel,
+    OnnxWhisperModel, TextBoundingBox, TEXT_MODEL_LABELS,
 };
 
 use hre_core::Backend;

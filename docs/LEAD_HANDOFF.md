@@ -42,7 +42,7 @@ All 4 genuine multimodal capabilities and core text/behavior models are integrat
 ### 1. Active Models in Engine
 - **NSFW Image Classification**: `models/nsfw.onnx` (Falconsai ViT, 2 classes: `normal`, `nsfw`). Preprocessing: resize/crop to $224 \times 224 \times 3$, ImageNet normalization. Backend: `OnnxImageBackend`.
 - **Deepfake Image Detection**: `models/deepfake.onnx` (dima806 ViT, 2 classes: `authentic`, `deepfake`). Preprocessing: $224 \times 224 \times 3$ float32 RGB. Attached via `OnnxDeepfakeModel`.
-- **OCR Text Recognition**: `models/ocr_recognizer.onnx` (PP-OCRv4 line recognizer) + `models/ocr_vocab.json`. Preprocessing: height 48px, variable width normalized to $[-0.5, 0.5]$. CTC greedy decoding. Backend: `OnnxOcrBackend`.
+- **OCR Text Detection & Recognition**: Full 2-stage pipeline using `models/ocr_detector.onnx` (DBNet text detector) and `models/ocr_recognizer.onnx` (PP-OCRv4 recognizer) + `models/ocr_vocab.json`. Detects text bounding boxes across multi-line screenshots/documents, crops text regions, and decodes text using CTC greedy decoding. Backend: `OnnxOcrBackend`.
 - **Audio Transcription**: `models/whisper_encoder.onnx` + `models/whisper_decoder.onnx` + `models/whisper_tokenizer.json` (OpenAI Whisper-tiny ONNX pipeline). Backend: `OnnxWhisperModel` / `OnnxAudioBackend`.
 - **Text Harassment Classification**: `models/text_fine_tuned.onnx` (multilingual XLM-RoBERTa, 11 toxic/harassment labels). Backend: `OnnxTextModel`.
 - **Message & Call Behavioral Risk**: `models/behavior_msg.onnx` (47 behavioral features) & `models/behavior_calls.onnx`. Backend: `OnnxBehaviorModel`.
@@ -109,6 +109,6 @@ All 4 genuine multimodal capabilities and core text/behavior models are integrat
 - **Web UI**: Access `/` or `/dashboard/login` for the pre-rendered Material 3 Expressive moderator interface.
 
 ### 3. Practical Tips for App & Dashboard Developers
-- **OCR Cropping**: The PP-OCRv4 recognizer is a text-line model (height 48px). When sending camera photos or screenshots containing text, crop tightly to the text line/banner for 99%+ recognition accuracy.
+- **Full-Page Multi-line OCR**: The engine features an automatic DBNet text detector (`ocr_detector.onnx`) paired with the PP-OCRv4 recognizer (`ocr_recognizer.onnx`). Full screenshots and multi-line documents can be sent directly; the engine automatically detects multiple text lines, crops, and recognizes them in reading order without requiring client-side cropping.
 - **Privacy Compliance**: Per repo architecture, raw images and transcribed audio bodies are never stored in the database. Only HMAC hashes and risk metrics are persisted.
 - **Offline / Mock Testing**: Run server with `--mock` flag to simulate all multimodal responses without needing local ONNX weights or GPU acceleration.

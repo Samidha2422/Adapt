@@ -1,20 +1,30 @@
-"""Export and wrap genuine pretrained OCR recognition model matching docs/MODEL_CONTRACT.md.
+"""Export and wrap genuine pretrained OCR recognition and detection models matching docs/MODEL_CONTRACT.md.
 
 Model Details:
-- Upstream Base: PP-OCRv4 English Recognizer (en_PP-OCRv4_rec)
-- Source Repository: https://huggingface.co/deepghs/paddleocr
-- Upstream Revision: e7bd63d9c674c96bd4fdab435af0efb383919c18
-- Original Authors: PaddlePaddle / PaddleOCR Authors
-- License: Apache-2.0
-- Contract Input: pixel_values [1, 3, 48, 320] float32
-- Contract Output: token_probabilities [1, 80, 256] float32
-- Vocabulary: 256-entry versioned charset (index 0: CTC blank)
+1. Recognizer:
+   - Upstream Base: PP-OCRv4 English Recognizer (en_PP-OCRv4_rec)
+   - Source Repository: https://huggingface.co/deepghs/paddleocr
+   - Upstream Revision: e7bd63d9c674c96bd4fdab435af0efb383919c18
+   - Original Authors: PaddlePaddle / PaddleOCR Authors
+   - License: Apache-2.0
+   - Contract Input: pixel_values [1, 3, 48, 320] float32
+   - Contract Output: token_probabilities [1, 80, 256] float32
+   - Vocabulary: 256-entry versioned charset (index 0: CTC blank)
+2. Detector:
+   - Upstream Base: PP-OCRv4 Text Detector (ch_PP-OCRv4_det)
+   - Source Repository: https://huggingface.co/deepghs/paddleocr
+   - Upstream Revision: e7bd63d9c674c96bd4fdab435af0efb383919c18
+   - Original Authors: PaddlePaddle / PaddleOCR Authors
+   - License: Apache-2.0
+   - Input: x [1, 3, H, W] float32 (dynamic multiples of 32, ImageNet normalized)
+   - Output: sigmoid_0.tmp_0 [1, 1, H, W] float32 (probability map)
 """
 
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import urllib.request
 import numpy as np
 import onnx
@@ -24,10 +34,12 @@ BASE_HF_REPO = "https://huggingface.co/deepghs/paddleocr/resolve/main"
 REVISION_SHA = "e7bd63d9c674c96bd4fdab435af0efb383919c18"
 MODEL_URL = f"{BASE_HF_REPO}/rec/en_PP-OCRv4_rec/model.onnx"
 DICT_URL = f"{BASE_HF_REPO}/rec/en_PP-OCRv4_rec/dict.txt"
+DET_MODEL_URL = f"{BASE_HF_REPO}/det/ch_PP-OCRv4_det/model.onnx"
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT_DIR / "models"
 OUTPUT_ONNX = MODELS_DIR / "ocr_recognizer.onnx"
+OUTPUT_DET_ONNX = MODELS_DIR / "ocr_detector.onnx"
 OUTPUT_VOCAB = MODELS_DIR / "ocr_vocab.json"
 CACHE_DIR = MODELS_DIR / "_cache"
 
@@ -49,11 +61,6 @@ def build_vocabulary(dict_path: Path, vocab_out_path: Path) -> list[str]:
     with open(dict_path, "r", encoding="utf-8") as f:
         raw_chars = [line.strip("\r\n") for line in f]
 
-    # Contract requirement: 256 entries.
-    # Index 0: CTC blank token ("")
-    # Indices 1..95: 95 printable ASCII characters from upstream dict
-    # Index 96: space ' ' (upstream rec head space class)
-    # Indices 97..255: unassigned / reserved padding tokens
     vocab = [""] * 256
     vocab[0] = ""  # CTC blank
 
@@ -168,41 +175,65 @@ def main():
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     raw_onnx = CACHE_DIR / "en_PP-OCRv4_rec.onnx"
     raw_dict = CACHE_DIR / "en_PP-OCRv4_dict.txt"
+    raw_det_onnx = CACHE_DIR / "ch_PP-OCRv4_det.onnx"
 
     # Reuse temp files if available
     temp_v4 = MODELS_DIR / "_temp_v4.onnx"
     temp_dict = MODELS_DIR / "_vocab_v4.txt"
     if temp_v4.exists() and not raw_onnx.exists():
-        import shutil
         shutil.copyfile(temp_v4, raw_onnx)
     if temp_dict.exists() and not raw_dict.exists():
-        import shutil
         shutil.copyfile(temp_dict, raw_dict)
 
     download_file(MODEL_URL, raw_onnx)
     download_file(DICT_URL, raw_dict)
+    download_file(DET_MODEL_URL, raw_det_onnx)
 
     build_vocabulary(raw_dict, OUTPUT_VOCAB)
     build_wrapped_onnx(raw_onnx, OUTPUT_ONNX)
 
-    # Compute digest and size
-    size_bytes = OUTPUT_ONNX.stat().st_size
-    hasher = hashlib.sha256()
-    with open(OUTPUT_ONNX, "rb") as f:
-        while chunk := f.read(1024 * 1024):
-            hasher.update(chunk)
-    sha256 = hasher.hexdigest()
+    if not OUTPUT_DET_ONNX.exists() or OUTPUT_DET_ONNX.stat().st_size != raw_det_onnx.stat().st_size:
+        shutil.copyfile(raw_det_onnx, OUTPUT_DET_ONNX)
+        print(f"Copied detector to {OUTPUT_DET_ONNX}")
 
+    EXPECTED_HASHES = {
+        "Recognizer": (OUTPUT_ONNX, "b7945055470411e7136c07b2ce74e4a46581723bafba44433cc01fc560f07002"),
+        "Detector": (OUTPUT_DET_ONNX, "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff"),
+        "Vocabulary": (OUTPUT_VOCAB, "1b4284d1c01959346570b7dccfd6660ebcafc1f2c7edacf4d0b14b48bb2f2348"),
+    }
+
+    # Verify compatibility and digests
     print("\n" + "=" * 60)
-    print("OCR Model Export Completed Successfully!")
-    print(f"Artifact Path:      {OUTPUT_ONNX}")
-    print(f"Byte Size:          {size_bytes:,} bytes")
-    print(f"SHA-256 Digest:     {sha256}")
-    print(f"Vocab Path:         {OUTPUT_VOCAB}")
-    print(f"Base Model:         en_PP-OCRv4_rec ({REVISION_SHA[:8]})")
-    print(f"License:            Apache-2.0")
-    print(f"Input Shape:        [1, 3, 48, 320] (pixel_values, float32)")
-    print(f"Output Shape:       [1, 80, 256] (token_probabilities, float32)")
+    print("Verifying Artifact Hashes and Cross-Compatibility...")
+    for name, (path, expected_hash) in EXPECTED_HASHES.items():
+        size_bytes = path.stat().st_size
+        hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(1024 * 1024):
+                hasher.update(chunk)
+        actual_hash = hasher.hexdigest().lower()
+
+        if actual_hash != expected_hash.lower():
+            raise ValueError(
+                f"Compatibility Error: {name} hash mismatch!\n"
+                f"  Expected: {expected_hash}\n"
+                f"  Actual:   {actual_hash}"
+            )
+
+        print(f"  {name:12s} Verified: {actual_hash} ({size_bytes:,} bytes)")
+
+    # Verify vocabulary and recognizer class count parity
+    with open(OUTPUT_VOCAB, "r", encoding="utf-8") as f:
+        vocab_data = json.load(f)
+    if len(vocab_data["tokens"]) != 256:
+        raise ValueError(f"Vocabulary token count ({len(vocab_data['tokens'])}) != 256 contract classes")
+    if vocab_data["tokens"][0] != "":
+        raise ValueError("Vocabulary token 0 must be CTC blank ('')")
+    if vocab_data["tokens"][96] != " ":
+        raise ValueError("Vocabulary token 96 must be space (' ')")
+
+    print("=" * 60)
+    print("All OCR Artifacts Validated and Cross-Compatible!")
     print("=" * 60)
 
 
