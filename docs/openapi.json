@@ -104,17 +104,7 @@
               }
             }
           },
-          "401": {
-            "description": "",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "409": {
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -124,7 +114,17 @@
               }
             }
           },
-          "413": {
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -143,8 +143,44 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
           },
-          "429": {
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/calllogs/import": {
+      "post": {
+        "tags": [],
+        "operationId": "import_call_logs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallLogImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallLogImportResponse"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -214,6 +250,141 @@
         ]
       }
     },
+    "/v1/evidence/export": {
+      "post": {
+        "tags": [],
+        "operationId": "export_evidence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceExport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/evidence/verify": {
+      "post": {
+        "tags": [],
+        "operationId": "verify_evidence",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceExport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceVerifyResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/evidence/{id}/html": {
+      "get": {
+        "tags": [],
+        "operationId": "get_evidence_html",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Subject ID or pseudonym",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Printable HTML report",
+            "content": {
+              "text/html": {}
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
     "/v1/health": {
       "get": {
         "tags": [],
@@ -249,8 +420,82 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/jobs/{id}": {
+      "get": {
+        "tags": [],
+        "operationId": "get_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           },
-          "401": {
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/recordings/analyze": {
+      "post": {
+        "tags": [],
+        "operationId": "submit_recording",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordingAnalyzeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
             "description": "",
             "content": {
               "application/json": {
@@ -314,6 +559,301 @@
           {
             "api_key": []
           },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/candidates": {
+      "get": {
+        "tags": [],
+        "operationId": "list_slang_candidates",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SlangCandidate"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/candidates/{id}/confirm": {
+      "post": {
+        "tags": [],
+        "operationId": "confirm_slang_candidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Candidate ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlangConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlangTerm"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/candidates/{id}/reject": {
+      "post": {
+        "tags": [],
+        "operationId": "reject_slang_candidate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Candidate ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlangCandidate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/retrain": {
+      "post": {
+        "tags": [],
+        "operationId": "retrain_slang",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlangRetrainResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/rollback": {
+      "post": {
+        "tags": [],
+        "operationId": "rollback_slang",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlangRollbackResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/slang/terms": {
+      "post": {
+        "tags": [],
+        "operationId": "add_slang_term",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlangAddTermRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlangTerm"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
           {
             "moderator": []
           }
@@ -624,6 +1164,55 @@
           "outgoing"
         ]
       },
+      "CallLogImportRequest": {
+        "type": "object",
+        "required": [
+          "csv_data"
+        ],
+        "properties": {
+          "csv_data": {
+            "type": "string"
+          }
+        }
+      },
+      "CallLogImportResponse": {
+        "type": "object",
+        "required": [
+          "imported"
+        ],
+        "properties": {
+          "imported": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "CertificateDraft": {
+        "type": "object",
+        "required": [
+          "act_reference",
+          "part_a_statement",
+          "part_b_advisory",
+          "emergency_helplines"
+        ],
+        "properties": {
+          "act_reference": {
+            "type": "string"
+          },
+          "emergency_helplines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "part_a_statement": {
+            "type": "string"
+          },
+          "part_b_advisory": {
+            "type": "string"
+          }
+        }
+      },
       "Channel": {
         "type": "object",
         "required": [
@@ -732,6 +1321,141 @@
           "call_event"
         ]
       },
+      "EvidenceExport": {
+        "type": "object",
+        "required": [
+          "export_id",
+          "subject_pseudonym",
+          "generated_at",
+          "record_count",
+          "records",
+          "manifest_hash",
+          "hmac_signature",
+          "certificate_draft"
+        ],
+        "properties": {
+          "certificate_draft": {
+            "$ref": "#/components/schemas/CertificateDraft"
+          },
+          "export_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "hmac_signature": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "record_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRecord"
+            }
+          },
+          "subject_pseudonym": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceExportRequest": {
+        "type": "object",
+        "required": [
+          "subject_id"
+        ],
+        "properties": {
+          "subject_id": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceRecord": {
+        "type": "object",
+        "required": [
+          "record_id",
+          "event_id",
+          "timestamp_utc",
+          "timestamp_local",
+          "kind",
+          "sender_pseudonym",
+          "recipient_pseudonym",
+          "platform",
+          "summary",
+          "severity",
+          "tier",
+          "reasons",
+          "prev_hash",
+          "canonical_hash"
+        ],
+        "properties": {
+          "canonical_hash": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "prev_hash": {
+            "type": "string"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            }
+          },
+          "recipient_pseudonym": {
+            "type": "string"
+          },
+          "record_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sender_pseudonym": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "timestamp_local": {
+            "type": "string"
+          },
+          "timestamp_utc": {
+            "type": "string"
+          }
+        }
+      },
+      "EvidenceVerifyResponse": {
+        "type": "object",
+        "required": [
+          "valid"
+        ],
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          }
+        }
+      },
       "FeedProtection": {
         "type": "object",
         "required": [
@@ -776,6 +1500,22 @@
             "type": "string"
           },
           "version": {
+            "type": "string"
+          }
+        }
+      },
+      "JobSubmissionResponse": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "status"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
             "type": "string"
           }
         }
@@ -914,6 +1654,23 @@
           "weight": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "RecordingAnalyzeRequest": {
+        "type": "object",
+        "required": [
+          "mime"
+        ],
+        "properties": {
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": "string"
           }
         }
       },
@@ -1087,6 +1844,147 @@
           },
           "text": {
             "$ref": "#/components/schemas/Signal"
+          }
+        }
+      },
+      "SlangAddTermRequest": {
+        "type": "object",
+        "required": [
+          "term",
+          "meaning",
+          "severity"
+        ],
+        "properties": {
+          "meaning": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "number",
+            "format": "double"
+          },
+          "term": {
+            "type": "string"
+          }
+        }
+      },
+      "SlangCandidate": {
+        "type": "object",
+        "required": [
+          "id",
+          "term",
+          "context_masked",
+          "sender_count",
+          "score",
+          "created_at"
+        ],
+        "properties": {
+          "context_masked": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          },
+          "sender_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "term": {
+            "type": "string"
+          }
+        }
+      },
+      "SlangConfirmRequest": {
+        "type": "object",
+        "required": [
+          "meaning",
+          "severity"
+        ],
+        "properties": {
+          "meaning": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "SlangRetrainResponse": {
+        "type": "object",
+        "required": [
+          "version",
+          "val_precision"
+        ],
+        "properties": {
+          "val_precision": {
+            "type": "number",
+            "format": "double"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "SlangRollbackResponse": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "SlangTerm": {
+        "type": "object",
+        "required": [
+          "term",
+          "meaning",
+          "severity",
+          "language",
+          "added_by",
+          "created_at",
+          "version"
+        ],
+        "properties": {
+          "added_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "language": {
+            "type": "string"
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "number",
+            "format": "double"
+          },
+          "term": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },

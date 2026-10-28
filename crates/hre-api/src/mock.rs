@@ -128,6 +128,11 @@ pub fn analyze(request: &AnalyzeRequest) -> AnalyzeResponse {
                 SecondaryAction::CollapseReplies,
                 SecondaryAction::RateLimit,
             ]
+        } else if code == "THREAT" || tag.starts_with("voice_note") {
+            vec![
+                SecondaryAction::AlertModerator,
+                SecondaryAction::ShowTranscript,
+            ]
         } else if score >= 31 {
             vec![SecondaryAction::AlertModerator]
         } else {

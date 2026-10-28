@@ -792,10 +792,14 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "hre-audio",
  "hre-behavior",
+ "hre-calls",
  "hre-core",
+ "hre-evidence",
  "hre-fusion",
  "hre-ml",
+ "hre-slang",
  "hre-store",
  "hre-text",
  "hre-vision",
@@ -810,6 +814,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "hre-audio"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hre-core",
+ "hre-text",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
  "uuid",
 ]
 
@@ -829,6 +848,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hre-calls"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hre-behavior",
+ "hre-core",
+ "hre-store",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "hre-core"
 version = "0.1.0"
 dependencies = [
@@ -839,6 +872,53 @@ dependencies = [
  "sha2",
  "thiserror",
  "toml",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "hre-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "hmac",
+ "hre-api",
+ "hre-audio",
+ "hre-behavior",
+ "hre-calls",
+ "hre-core",
+ "hre-evidence",
+ "hre-fusion",
+ "hre-slang",
+ "hre-store",
+ "hre-text",
+ "hre-vision",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "hre-evidence"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hmac",
+ "hre-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
  "utoipa",
  "uuid",
 ]
@@ -866,6 +946,21 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+]
+
+[[package]]
+name = "hre-slang"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hre-core",
+ "hre-text",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]

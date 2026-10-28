@@ -9,6 +9,11 @@ members = [
     "crates/hre-fusion",
     "crates/hre-text",
     "crates/hre-vision",
+    "crates/hre-calls",
+    "crates/hre-audio",
+    "crates/hre-slang",
+    "crates/hre-evidence",
+    "crates/hre-eval",
 ]
 
 [workspace.package]

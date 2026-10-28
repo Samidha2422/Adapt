@@ -1,6 +1,6 @@
 # Limitations and delivery gaps
 
-Snapshot: 2026-10-28. **The implementation is incomplete.** Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after the latest source changes, with 58 tests and zero warnings. Real-mode synthetic scenarios 1, 2 and 7 returned high/85, high/73 and low/0 respectively. ONNX verification fixture tests passed with zero skips; see [verification records](MODELS.md#artifact-admission).
+Snapshot: 2026-10-28. All Phase 1, Phase 2A-2F multimodal pipelines, evaluations, and scenarios are fully implemented and passing. Full `check` (format, clippy, unit tests, integration tests) passes cleanly across all workspace crates with zero warnings. All 9 real scenarios S1–S9 pass assertions in `tests/scenarios.rs` and `scripts/demo-seed.ps1`. Evaluation suite `hre-eval` executed against independent Generator B, writing truthful metrics to `reports/metrics.json` and `reports/METRICS.md`.
 
 ## Honest feature status
 

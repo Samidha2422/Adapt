@@ -436,3 +436,294 @@ async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
         .any(|r| r.code == "OCR_ABUSE" || r.code.contains("THREAT")));
     assert!(response.signals.ocr.score >= 0.5);
 }
+
+#[tokio::test]
+async fn scenario_5_voice_note_threatening_transcribed_shows_transcript() {
+    let app = app().await;
+    let input = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "audio",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800, 0).unwrap(),
+        "sender_id": "harasser",
+        "recipient_id": "target",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-5"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "audio/mpeg",
+            "caption": "threat:I will find you and kill you"
+        }
+    });
+    let response = analyze(&app, input).await;
+    assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
+    assert!(response.signals.audio.score >= 0.8);
+    assert!(response
+        .secondary_actions
+        .contains(&SecondaryAction::ShowTranscript));
+    assert!(response.reasons.iter().any(|r| r.code.contains("THREAT")));
+}
+
+#[tokio::test]
+async fn scenario_6_overnight_unanswered_calls_classified_high() {
+    let app = app().await;
+    let base_ts = 1793214000i64;
+    for i in 0..40 {
+        if i == 30 {
+            let refusal = json!({
+                "event_id": uuid::Uuid::new_v4(),
+                "sender_id": "persistent-caller",
+                "recipient_id": "target",
+                "platform": "phone",
+                "kind": "block",
+                "occurred_at": chrono::DateTime::from_timestamp(base_ts + 29 * 60 + 30, 0).unwrap()
+            });
+            assert_eq!(
+                post(&app, "/v1/events/refusal", &refusal).await,
+                StatusCode::NO_CONTENT
+            );
+        }
+        let input = json!({
+            "event_id": uuid::Uuid::new_v4(),
+            "kind": "call_event",
+            "occurred_at": chrono::DateTime::from_timestamp(base_ts + i * 60, 0).unwrap(),
+            "sender_id": "persistent-caller",
+            "recipient_id": "target",
+            "platform": "phone",
+            "channel": {"type": "call", "conversation_id": "phone-call"},
+            "context": {"is_contact": false, "recipient_blocked_sender": i >= 30},
+            "call": {
+                "direction": "incoming",
+                "duration_s": 0,
+                "answered": false,
+                "voicemail": false
+            }
+        });
+        let response = analyze(&app, input).await;
+        if i >= 30 {
+            assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
+            assert!(response.signals.call.score >= 0.6);
+            assert!(response
+                .reasons
+                .iter()
+                .any(|r| r.code.contains("REPEATED_CALLS")
+                    || r.code.contains("NIGHT")
+                    || r.code.contains("UNANSWERED")
+                    || r.code.contains("REFUSAL")));
+        }
+    }
+}
+
+#[tokio::test]
+async fn call_log_csv_import_and_recording_job() {
+    let app = app().await;
+    let csv = "timestamp,caller,callee,duration_s,answered,direction\n\
+               1793188800,caller1,callee1,120,true,incoming\n\
+               1793188860,caller1,callee1,0,false,incoming";
+    let import_req = json!({ "csv_data": csv });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/calllogs/import")
+                .header("content-type", "application/json")
+                .header("x-api-key", "key")
+                .body(Body::from(import_req.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["imported"], 2);
+
+    // Test recording job
+    let rec_req = json!({
+        "mime": "audio/mpeg",
+        "caption": "I will find you and kill you"
+    });
+    let res2 = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/recordings/analyze")
+                .header("content-type", "application/json")
+                .header("x-api-key", "key")
+                .body(Body::from(rec_req.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res2.status(), StatusCode::ACCEPTED);
+    let body2: Value =
+        serde_json::from_slice(&res2.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let job_id = body2["job_id"].as_str().unwrap();
+
+    let res3 = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/v1/jobs/{job_id}"))
+                .header("x-api-key", "key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res3.status(), StatusCode::OK);
+    let body3: Value =
+        serde_json::from_slice(&res3.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body3["status"], "completed");
+}
+
+#[tokio::test]
+async fn scenario_8_slang_update_miss_confirm_caught() {
+    let app = app().await;
+
+    // 1. Before confirmation, message with invented slang 'vexling' is a miss (Tier::Low)
+    let mut input = event("bully", "target", 1);
+    input["message"]["text"] = json!("You are such a vexling");
+    let res_before = analyze(&app, input.clone()).await;
+    assert_eq!(res_before.tier, Tier::Low);
+    assert!(!res_before.reasons.iter().any(|r| r.code == "SLANG_MATCH"));
+
+    // 2. Moderator confirms the invented term 'vexling'
+    let conf_req = json!({
+        "term": "vexling",
+        "meaning": "invented harassing slur",
+        "severity": 0.45
+    });
+    let res_conf = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/slang/terms")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer mod")
+                .body(Body::from(conf_req.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_conf.status(), StatusCode::OK);
+
+    // 3. Next message with 'vexling' is immediately caught (Tier::Review)
+    let mut input_after = event("bully", "target", 2);
+    input_after["message"]["text"] = json!("Stop being a vexling");
+    let res_after = analyze(&app, input_after).await;
+    assert_eq!(res_after.tier, Tier::Review);
+    assert!(res_after.reasons.iter().any(|r| r.code == "SLANG_MATCH"));
+}
+
+#[tokio::test]
+async fn scenario_9_evidence_export_multimodal_timeline_hash_chained_and_verifiable() {
+    let app = app().await;
+
+    // Seed events across multimodal channels: message, image, audio, call
+    let mut msg_ev = event("harasser", "victim", 1);
+    msg_ev["message"]["text"] = json!("I know where you live");
+    analyze(&app, msg_ev).await;
+
+    let img_ev = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "image",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800 + 10, 0).unwrap(),
+        "sender_id": "harasser",
+        "recipient_id": "victim",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-9"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "image/png",
+            "caption": "cyberflashing"
+        }
+    });
+    analyze(&app, img_ev).await;
+
+    let aud_ev = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "audio",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800 + 20, 0).unwrap(),
+        "sender_id": "harasser",
+        "recipient_id": "victim",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-9"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "audio/mpeg",
+            "caption": "threat:I will find you"
+        }
+    });
+    analyze(&app, aud_ev).await;
+
+    let call_ev = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "call_event",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800 + 30, 0).unwrap(),
+        "sender_id": "harasser",
+        "recipient_id": "victim",
+        "platform": "demo-chat",
+        "channel": {"type": "call", "conversation_id": "scenario-9"},
+        "context": {"is_contact": false},
+        "call": {
+            "direction": "incoming",
+            "duration_s": 0,
+            "answered": false,
+            "voicemail": false
+        }
+    });
+    analyze(&app, call_ev).await;
+
+    // Export evidence
+    let export_req = json!({ "subject_id": "victim" });
+    let res_exp = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/evidence/export")
+                .header("content-type", "application/json")
+                .header("x-api-key", "key")
+                .body(Body::from(export_req.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_exp.status(), StatusCode::OK);
+    let export_body: Value =
+        serde_json::from_slice(&res_exp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let record_count = export_body["record_count"].as_u64().unwrap();
+    assert_eq!(record_count, 4);
+    assert!(!export_body["manifest_hash"].as_str().unwrap().is_empty());
+    assert!(!export_body["hmac_signature"].as_str().unwrap().is_empty());
+
+    // Verify evidence cryptographically
+    let res_verify = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/evidence/verify")
+                .header("content-type", "application/json")
+                .header("x-api-key", "key")
+                .body(Body::from(export_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_verify.status(), StatusCode::OK);
+    let verify_body: Value =
+        serde_json::from_slice(&res_verify.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(verify_body["valid"], true);
+
+    // Get printable HTML report with BSA 2023 Sec 63(4) certificate draft
+    let res_html = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/evidence/victim/html")
+                .header("x-api-key", "key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_html.status(), StatusCode::OK);
+    let html_bytes = res_html.into_body().collect().await.unwrap().to_bytes();
+    let html_str = String::from_utf8(html_bytes.to_vec()).unwrap();
+    assert!(html_str.contains("Bharatiya Sakshya Adhiniyam 2023, Section 63(4)"));
+    assert!(html_str.contains("cybercrime.gov.in"));
+    assert!(html_str.contains("1930"));
+}
