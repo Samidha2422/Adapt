@@ -796,6 +796,7 @@ dependencies = [
  "hre-behavior",
  "hre-calls",
  "hre-core",
+ "hre-dashboard",
  "hre-evidence",
  "hre-fusion",
  "hre-ml",
@@ -909,6 +910,24 @@ dependencies = [
  "thiserror",
  "toml",
  "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "hre-dashboard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "hre-core",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
  "uuid",
 ]
 
