@@ -1,7 +1,8 @@
 //! Model manifest verification, honest fallback selection, and ONNX Runtime inference.
 pub mod onnx;
 pub use onnx::{
-    OnnxBehaviorModel, OnnxImageBackend, OnnxNsfwModel, OnnxTextBackend, OnnxTextModel,
+    OnnxAudioBackend, OnnxBehaviorModel, OnnxDeepfakeModel, OnnxImageBackend, OnnxNsfwModel,
+    OnnxOcrBackend, OnnxOcrModel, OnnxTextBackend, OnnxTextModel, OnnxWhisperModel,
     TEXT_MODEL_LABELS,
 };
 

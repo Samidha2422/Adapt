@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+hre-audio = { path = "../hre-audio" }
 hre-core = { path = "../hre-core" }
 hre-text = { path = "../hre-text" }
 hre-vision = { path = "../hre-vision" }
@@ -16,6 +17,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

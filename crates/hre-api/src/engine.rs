@@ -14,8 +14,9 @@ pub(crate) struct Engine {
     fusion: hre_fusion::FusionConfig,
     registry: hre_ml::ModelRegistry,
     image: std::sync::Arc<dyn hre_vision::ImageBackend>,
-    ocr: hre_vision::HeuristicOcrBackend,
-    pub(crate) audio: hre_audio::HeuristicAudioBackend,
+    onnx_deepfake: Option<std::sync::Arc<hre_ml::OnnxDeepfakeModel>>,
+    ocr: hre_ml::OnnxOcrBackend,
+    pub(crate) audio: hre_ml::OnnxAudioBackend,
     pub(crate) jobs: hre_audio::JobManager,
     pub(crate) slang_lexicon: hre_slang::SlangLexicon,
     pub(crate) slang_miner: hre_slang::CandidateMiner,
@@ -27,103 +28,156 @@ impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
         let demo_mode = config.demo_mode;
         let models_dir = config.models_dir.clone();
-        let (mut behavior, fusion, registry, text_backend, onnx_behavior, image) =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-                let behavior = match std::fs::read_to_string("config/behavior_rules.toml") {
-                    Ok(text) => hre_behavior::BehaviorConfig::parse(&text)?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        hre_behavior::BehaviorConfig::default()
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                let fusion = match std::fs::read_to_string("config/fusion.toml") {
-                    Ok(text) => hre_fusion::FusionConfig::parse(&text)?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        hre_fusion::FusionConfig::default()
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                let models_path = std::path::Path::new(&models_dir);
-                let manifest = std::fs::read_to_string(models_path.join("manifest.json"))
-                    .ok()
-                    .and_then(|j| hre_ml::ModelManifest::parse(&j).ok());
-                let text_thresholds = manifest
-                    .as_ref()
-                    .and_then(|m| {
-                        m.models
-                            .iter()
-                            .find(|entry| entry.task == "text_fine_tuned")
-                    })
-                    .map(|entry| entry.thresholds.clone())
-                    .unwrap_or_default();
+        let (
+            mut behavior,
+            fusion,
+            registry,
+            text_backend,
+            onnx_behavior,
+            image,
+            onnx_deepfake,
+            ocr,
+            audio,
+        ) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let behavior = match std::fs::read_to_string("config/behavior_rules.toml") {
+                Ok(text) => hre_behavior::BehaviorConfig::parse(&text)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    hre_behavior::BehaviorConfig::default()
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let fusion = match std::fs::read_to_string("config/fusion.toml") {
+                Ok(text) => hre_fusion::FusionConfig::parse(&text)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    hre_fusion::FusionConfig::default()
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let models_path = std::path::Path::new(&models_dir);
+            let manifest = std::fs::read_to_string(models_path.join("manifest.json"))
+                .ok()
+                .and_then(|j| hre_ml::ModelManifest::parse(&j).ok());
+            let text_thresholds = manifest
+                .as_ref()
+                .and_then(|m| {
+                    m.models
+                        .iter()
+                        .find(|entry| entry.task == "text_fine_tuned")
+                })
+                .map(|entry| entry.thresholds.clone())
+                .unwrap_or_default();
 
-                let text_backend: std::sync::Arc<dyn hre_text::TextBackend> =
-                    match hre_ml::OnnxTextBackend::load_from_dir(models_path, text_thresholds) {
-                        Ok(b) => std::sync::Arc::new(b),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to load ONNX text model ({e}); using heuristic backend"
-                            );
-                            std::sync::Arc::new(hre_text::HeuristicTextBackend)
-                        }
-                    };
-
-                let onnx_behavior = match hre_ml::OnnxBehaviorModel::load(
-                    &models_path.join("behavior_msg.onnx"),
-                    47,
-                ) {
-                    Ok(m) => Some(std::sync::Arc::new(m)),
+            let text_backend: std::sync::Arc<dyn hre_text::TextBackend> =
+                match hre_ml::OnnxTextBackend::load_from_dir(models_path, text_thresholds) {
+                    Ok(b) => std::sync::Arc::new(b),
                     Err(e) => {
                         tracing::warn!(
-                            "Failed to load ONNX behavior model ({e}); using logistic fallback"
+                            "Failed to load ONNX text model ({e}); using heuristic backend"
                         );
-                        None
+                        std::sync::Arc::new(hre_text::HeuristicTextBackend)
                     }
                 };
 
-                let nsfw_threshold = manifest
-                    .as_ref()
-                    .and_then(|m| {
-                        m.models
-                            .iter()
-                            .find(|entry| entry.task == "nsfw")
-                    })
-                    .and_then(|entry| entry.thresholds.get("decision").copied())
-                    .unwrap_or(0.50);
+            let onnx_behavior = match hre_ml::OnnxBehaviorModel::load(
+                &models_path.join("behavior_msg.onnx"),
+                47,
+            ) {
+                Ok(m) => Some(std::sync::Arc::new(m)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load ONNX behavior model ({e}); using logistic fallback"
+                    );
+                    None
+                }
+            };
 
-                let heuristic_image = if demo_mode {
-                    hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
-                        "config/demo_overrides.toml",
-                    ))
-                } else {
-                    hre_vision::HeuristicImageBackend::new()
+            let nsfw_threshold = manifest
+                .as_ref()
+                .and_then(|m| {
+                    m.models
+                        .iter()
+                        .find(|entry| entry.task == "nsfw")
+                })
+                .and_then(|entry| entry.thresholds.get("decision").copied())
+                .unwrap_or(0.50);
+
+            let heuristic_image = if demo_mode {
+                hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
+                    "config/demo_overrides.toml",
+                ))
+            } else {
+                hre_vision::HeuristicImageBackend::new()
+            };
+
+            let image: std::sync::Arc<dyn hre_vision::ImageBackend> =
+                match hre_ml::OnnxImageBackend::load(
+                    &models_path.join("nsfw.onnx"),
+                    nsfw_threshold,
+                    heuristic_image.clone(),
+                ) {
+                    Ok(b) => std::sync::Arc::new(b),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load ONNX NSFW model ({e}); using heuristic image backend"
+                        );
+                        std::sync::Arc::new(heuristic_image)
+                    }
                 };
 
-                let image: std::sync::Arc<dyn hre_vision::ImageBackend> =
-                    match hre_ml::OnnxImageBackend::load(
-                        &models_path.join("nsfw.onnx"),
-                        nsfw_threshold,
-                        heuristic_image.clone(),
-                    ) {
-                        Ok(b) => std::sync::Arc::new(b),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to load ONNX NSFW model ({e}); using heuristic image backend"
-                            );
-                            std::sync::Arc::new(heuristic_image)
-                        }
-                    };
+            let onnx_deepfake = match hre_ml::OnnxDeepfakeModel::load(
+                &models_path.join("deepfake.onnx"),
+            ) {
+                Ok(m) => Some(std::sync::Arc::new(m)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load ONNX Deepfake model ({e}); deepfake detection disabled"
+                    );
+                    None
+                }
+            };
 
-                Ok((
-                    behavior,
-                    fusion,
-                    hre_ml::ModelRegistry::load(models_path),
-                    text_backend,
-                    onnx_behavior,
-                    image,
-                ))
-            })
-            .await??;
+            let heuristic_ocr = hre_vision::HeuristicOcrBackend::new();
+            let ocr = match hre_ml::OnnxOcrBackend::load(
+                &models_path.join("ocr_recognizer.onnx"),
+                &models_path.join("ocr_vocab.json"),
+                heuristic_ocr.clone(),
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load ONNX OCR model ({e}); using heuristic OCR fallback"
+                    );
+                    hre_ml::OnnxOcrBackend::fallback_only(heuristic_ocr)
+                }
+            };
+
+            let heuristic_audio = hre_audio::HeuristicAudioBackend::new();
+            let audio = match hre_ml::OnnxAudioBackend::load(
+                models_path,
+                heuristic_audio.clone(),
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load ONNX Whisper audio model ({e}); using heuristic audio fallback"
+                    );
+                    hre_ml::OnnxAudioBackend::fallback_only(heuristic_audio)
+                }
+            };
+
+            Ok((
+                behavior,
+                fusion,
+                hre_ml::ModelRegistry::load(models_path),
+                text_backend,
+                onnx_behavior,
+                image,
+                onnx_deepfake,
+                ocr,
+                audio,
+            ))
+        })
+        .await??;
         behavior.night_start_hour = u32::from(config.night_start_hour);
         behavior.night_end_hour = u32::from(config.night_end_hour);
         if config.night_timezone == "Asia/Kolkata" {
@@ -131,8 +185,6 @@ impl Engine {
         } else if config.night_timezone != "UTC" {
             anyhow::bail!("night_timezone currently supports Asia/Kolkata or UTC");
         }
-        let ocr = hre_vision::HeuristicOcrBackend::new();
-        let audio = hre_audio::HeuristicAudioBackend::new();
         let jobs = hre_audio::JobManager::new();
         let slang_lexicon = hre_slang::SlangLexicon::new();
         let slang_miner = hre_slang::CandidateMiner::new();
@@ -149,6 +201,7 @@ impl Engine {
             fusion,
             registry,
             image,
+            onnx_deepfake,
             ocr,
             audio,
             jobs,
@@ -232,6 +285,7 @@ impl Engine {
         let started = Instant::now();
         let envelope = request.clone();
         let image = self.image.clone();
+        let onnx_deepfake = self.onnx_deepfake.clone();
         let ocr = self.ocr.clone();
         let text_backend = self.text_backend.clone();
         let (mut text_report, image_analysis, ocr_report) =
@@ -273,10 +327,37 @@ impl Engine {
                         analysis.signal.backend = Backend::Disabled;
                         analysis.signal.label = "image_model_unavailable".into();
                     }
+                    if let Some(df_model) = &onnx_deepfake {
+                        if let Ok(probs) = df_model.predict_image(&bytes, mime) {
+                            let deepfake_score = f64::from(probs[1]);
+                            let nsfw_score = analysis.signal.score;
+                            let df_assessment = hre_vision::evaluate_deepfake_composite(
+                                true,
+                                deepfake_score,
+                                nsfw_score,
+                            );
+                            analysis
+                                .signal
+                                .details
+                                .insert("deepfake_score".into(), serde_json::json!(deepfake_score));
+                            analysis
+                                .signal
+                                .details
+                                .insert("deepfake_authentic".into(), serde_json::json!(probs[0]));
+                            if df_assessment.synthetic_intimate {
+                                analysis
+                                    .signal
+                                    .details
+                                    .insert("synthetic_intimate".into(), serde_json::json!(true));
+                            }
+                        }
+                    }
                     let mut report = ocr.process_image(&bytes, mime).map_err(|_| {
                         ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid image for OCR")
                     })?;
-                    if !report.raw_text.is_empty() {
+                    if report.signal.backend == Backend::Onnx {
+                        // Real ONNX OCR recognition from image pixels; preserves status: Built
+                    } else if !report.raw_text.is_empty() {
                         report.simulated = true;
                         report.signal.status = Status::Simulated;
                         report.signal.label = "embedded_metadata_text".into();
@@ -696,18 +777,31 @@ impl Engine {
             if let Some(report) = &ocr.text_report {
                 if report.primary_signal.score > signals.text.score {
                     signals.text = report.primary_signal.clone();
-                    signals.text.status = Status::Simulated;
+                    signals.text.status = if ocr.simulated {
+                        Status::Simulated
+                    } else {
+                        report.primary_signal.status
+                    };
                 }
                 if report.pii_signal.score > signals.pii.score {
                     signals.pii = report.pii_signal.clone();
-                    signals.pii.status = Status::Simulated;
+                    signals.pii.status = if ocr.simulated {
+                        Status::Simulated
+                    } else {
+                        report.pii_signal.status
+                    };
                 }
                 reasons.extend(report.reasons.clone());
             }
             if ocr.signal.score >= 0.5 {
+                let reason_text = if ocr.simulated {
+                    "Abusive text in image metadata (simulated OCR)".into()
+                } else {
+                    "Abusive text recognized in image pixels (ONNX OCR)".into()
+                };
                 reasons.push(Reason {
                     code: "OCR_ABUSE".into(),
-                    text: "Abusive text in image metadata (simulated OCR)".into(),
+                    text: reason_text,
                     weight: ocr.signal.score,
                     evidence: BTreeMap::new(),
                 });
@@ -727,6 +821,11 @@ impl Engine {
         }
         degraded.sort();
         degraded.dedup();
+        let synthetic_intimate = image_analysis
+            .as_ref()
+            .and_then(|i| i.signal.details.get("synthetic_intimate"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let input = hre_fusion::FusionInput {
             signals: signals.clone(),
             reasons,
@@ -734,6 +833,7 @@ impl Engine {
             threat: event.threat,
             doxxing_with_toxicity: event.pii_mentions > 0 && event.toxicity >= 0.6,
             unsolicited_explicit,
+            synthetic_intimate,
             reported_hash_match,
             after_refusal_count: behavior.after_refusal_count,
             healthy_reciprocity: behavior.healthy_reciprocity,

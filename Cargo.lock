@@ -1194,6 +1194,7 @@ dependencies = [
 name = "hre-ml"
 version = "0.1.0"
 dependencies = [
+ "hre-audio",
  "hre-core",
  "hre-text",
  "hre-vision",
@@ -1207,6 +1208,7 @@ dependencies = [
  "thiserror",
  "tokenizers",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

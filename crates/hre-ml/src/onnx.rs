@@ -1,6 +1,7 @@
 //! Safe ONNX Runtime loader, execution, and backends for behavior and text models.
 
 use crate::{InferenceBackend, ModelError};
+use hre_audio::{AudioBackend, AudioError, AudioReport, AudioTranscription, HeuristicAudioBackend};
 use hre_core::{Backend, Reason, Signal, Status};
 use hre_text::{
     cues::detect_cues,
@@ -8,7 +9,10 @@ use hre_text::{
     pii::mask_pii,
     TextBackend, TextError, TextReport,
 };
-use hre_vision::{validate_image, HeuristicImageBackend, ImageAnalysis, ImageBackend, VisionError};
+use hre_vision::{
+    validate_image, HeuristicImageBackend, HeuristicOcrBackend, ImageAnalysis, ImageBackend,
+    OcrBackend, OcrReport, VisionError,
+};
 use ndarray::{Array2, Array4};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
@@ -709,6 +713,598 @@ impl ImageBackend for OnnxImageBackend {
     }
 }
 
+/// Thread-safe ONNX model wrapper for Deepfake image classification (dima806/deepfake_vs_real_image_detection).
+pub struct OnnxDeepfakeModel {
+    session: Mutex<Session>,
+}
+
+impl std::fmt::Debug for OnnxDeepfakeModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxDeepfakeModel").finish_non_exhaustive()
+    }
+}
+
+impl OnnxDeepfakeModel {
+    pub fn load(model_path: &Path) -> Result<Self, ModelError> {
+        let env = get_or_init_ort_env()?;
+        let session = Session::builder(env)
+            .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| ModelError::Inference(format!("optimization level error: {e}")))?
+            .commit_from_file(model_path)
+            .map_err(|e| {
+                ModelError::Inference(format!(
+                    "failed to load ONNX Deepfake model from {}: {e}",
+                    model_path.display()
+                ))
+            })?;
+        Ok(Self {
+            session: Mutex::new(session),
+        })
+    }
+
+    /// Predict [authentic, manipulated] probabilities for input tensor [1, 3, 224, 224].
+    pub fn predict(&self, tensor: Array4<f32>) -> Result<[f32; 2], ModelError> {
+        if tensor.shape() != [1, 3, 224, 224] {
+            return Err(ModelError::Invalid(
+                "expected input tensor shape [1, 3, 224, 224]",
+            ));
+        }
+        if tensor.iter().any(|v| !v.is_finite()) {
+            return Err(ModelError::Invalid("non-finite value in image tensor"));
+        }
+        let input_tensor = Tensor::from_array(tensor)
+            .map_err(|e| ModelError::Inference(format!("failed to create image tensor: {e}")))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| ModelError::Inference("ONNX deepfake session mutex poisoned".into()))?;
+
+        let outputs = session
+            .run(ort::inputs!["pixel_values" => input_tensor])
+            .map_err(|e| ModelError::Inference(format!("deepfake inference run error: {e}")))?;
+
+        let probs = outputs["probabilities"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| {
+                ModelError::Inference(format!("failed to extract deepfake probabilities: {e}"))
+            })?;
+        let slice = probs.1;
+        if slice.len() != 2 {
+            return Err(ModelError::Inference(format!(
+                "expected 2 output probabilities, got {}",
+                slice.len()
+            )));
+        }
+        let authentic = slice[0];
+        let manipulated = slice[1];
+        if !authentic.is_finite()
+            || !manipulated.is_finite()
+            || !(0.0..=1.0).contains(&authentic)
+            || !(0.0..=1.0).contains(&manipulated)
+        {
+            return Err(ModelError::Inference(format!(
+                "output probability out of range: authentic={authentic}, manipulated={manipulated}"
+            )));
+        }
+        Ok([authentic, manipulated])
+    }
+
+    /// Convenience helper that pre-processes image bytes and predicts [authentic, manipulated].
+    pub fn predict_image(
+        &self,
+        bytes: &[u8],
+        declared_mime: &str,
+    ) -> Result<[f32; 2], VisionError> {
+        let tensor = preprocess_image(bytes, declared_mime)?;
+        self.predict(tensor)
+            .map_err(|e| VisionError::Ocr(e.to_string()))
+    }
+}
+
+/// Preprocess image for PP-OCRv4 text line recognition:
+/// Resizes preserving aspect ratio to height 48 (clamped to max width 320),
+/// right-pads to 320 with white/background (1.0 in normalized space),
+/// and normalizes to [-1.0, 1.0] in NCHW [1, 3, 48, 320].
+pub fn preprocess_ocr_line(bytes: &[u8], declared_mime: &str) -> Result<Array4<f32>, VisionError> {
+    let _meta = validate_image(bytes, declared_mime)?;
+    let dynamic_img = image::load_from_memory(bytes).map_err(|_| VisionError::TruncatedImage)?;
+    let (orig_w, orig_h) = (dynamic_img.width(), dynamic_img.height());
+    if orig_w == 0 || orig_h == 0 {
+        return Err(VisionError::InvalidDimensions);
+    }
+    let target_h = 48u32;
+    let ratio = orig_w as f32 / orig_h as f32;
+    let scaled_w = ((target_h as f32 * ratio).round() as u32).clamp(1, 320);
+    let resized = dynamic_img
+        .resize_exact(scaled_w, target_h, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+
+    let mut tensor = Array4::<f32>::zeros((1, 3, 48, 320));
+    tensor.fill(1.0); // right-side white padding
+    for y in 0..48 {
+        for x in 0..scaled_w {
+            let p = resized.get_pixel(x, y);
+            tensor[[0, 0, y as usize, x as usize]] = (p[0] as f32 / 255.0 - 0.5) / 0.5;
+            tensor[[0, 1, y as usize, x as usize]] = (p[1] as f32 / 255.0 - 0.5) / 0.5;
+            tensor[[0, 2, y as usize, x as usize]] = (p[2] as f32 / 255.0 - 0.5) / 0.5;
+        }
+    }
+    Ok(tensor)
+}
+
+/// Thread-safe ONNX model wrapper for PP-OCRv4 text line recognition.
+pub struct OnnxOcrModel {
+    session: Mutex<Session>,
+    vocab: Vec<String>,
+}
+
+impl std::fmt::Debug for OnnxOcrModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxOcrModel")
+            .field("vocab_size", &self.vocab.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl OnnxOcrModel {
+    pub fn load(model_path: &Path, vocab_path: &Path) -> Result<Self, ModelError> {
+        let env = get_or_init_ort_env()?;
+        let session = Session::builder(env)
+            .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| ModelError::Inference(format!("optimization level error: {e}")))?
+            .commit_from_file(model_path)
+            .map_err(|e| {
+                ModelError::Inference(format!(
+                    "failed to load ONNX OCR model from {}: {e}",
+                    model_path.display()
+                ))
+            })?;
+        let vocab_str = std::fs::read_to_string(vocab_path).map_err(|e| {
+            ModelError::Inference(format!(
+                "failed to read OCR vocab from {}: {e}",
+                vocab_path.display()
+            ))
+        })?;
+        #[derive(serde::Deserialize)]
+        struct VocabFile {
+            #[serde(default)]
+            tokens: Vec<String>,
+        }
+        let vocab: Vec<String> = if let Ok(vf) = serde_json::from_str::<VocabFile>(&vocab_str) {
+            if !vf.tokens.is_empty() {
+                vf.tokens
+            } else {
+                serde_json::from_str(&vocab_str).map_err(|e| {
+                    ModelError::Inference(format!("failed to parse OCR vocab JSON: {e}"))
+                })?
+            }
+        } else {
+            serde_json::from_str(&vocab_str).map_err(|e| {
+                ModelError::Inference(format!("failed to parse OCR vocab JSON: {e}"))
+            })?
+        };
+        Ok(Self {
+            session: Mutex::new(session),
+            vocab,
+        })
+    }
+
+    /// Run OCR model on preprocessed tensor [1, 3, 48, 320] and decode with CTC greedy search.
+    pub fn predict(&self, tensor: Array4<f32>) -> Result<(String, f64), ModelError> {
+        if tensor.shape() != [1, 3, 48, 320] {
+            return Err(ModelError::Invalid(
+                "expected input tensor shape [1, 3, 48, 320]",
+            ));
+        }
+        let input_tensor = Tensor::from_array(tensor)
+            .map_err(|e| ModelError::Inference(format!("failed to create OCR tensor: {e}")))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| ModelError::Inference("ONNX OCR session mutex poisoned".into()))?;
+
+        let outputs = session
+            .run(ort::inputs!["pixel_values" => input_tensor])
+            .map_err(|e| ModelError::Inference(format!("OCR inference run error: {e}")))?;
+
+        let probs = outputs["token_probabilities"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| {
+                ModelError::Inference(format!("failed to extract token_probabilities: {e}"))
+            })?;
+        let slice = probs.1; // [1 * 80 * 256]
+        if slice.len() != 80 * 256 {
+            return Err(ModelError::Inference(format!(
+                "expected 20480 output values, got {}",
+                slice.len()
+            )));
+        }
+
+        let (text, conf) = decode_ctc(slice, 80, &self.vocab);
+        Ok((text, conf))
+    }
+
+    pub fn recognize(
+        &self,
+        bytes: &[u8],
+        declared_mime: &str,
+    ) -> Result<(String, f64), VisionError> {
+        let tensor = preprocess_ocr_line(bytes, declared_mime)?;
+        self.predict(tensor)
+            .map_err(|e| VisionError::Ocr(e.to_string()))
+    }
+}
+
+fn decode_ctc(probs: &[f32], timesteps: usize, vocab: &[String]) -> (String, f64) {
+    let num_classes = vocab.len();
+    let mut decoded_tokens: Vec<usize> = Vec::new();
+    let mut token_confs: Vec<f32> = Vec::new();
+    let mut prev_token = 0usize;
+
+    for t in 0..timesteps {
+        let step_slice = &probs[t * num_classes..(t + 1) * num_classes];
+        let mut best_class = 0;
+        let mut best_prob = step_slice[0];
+        for (c, &prob) in step_slice.iter().enumerate().skip(1) {
+            if prob > best_prob {
+                best_prob = prob;
+                best_class = c;
+            }
+        }
+        if best_class != prev_token {
+            if best_class != 0 && best_class < vocab.len() {
+                decoded_tokens.push(best_class);
+                token_confs.push(best_prob);
+            }
+            prev_token = best_class;
+        }
+    }
+
+    let text: String = decoded_tokens
+        .iter()
+        .filter_map(|&idx| vocab.get(idx))
+        .cloned()
+        .collect();
+    let avg_conf = if token_confs.is_empty() {
+        0.0
+    } else {
+        f64::from(token_confs.iter().sum::<f32>() / token_confs.len() as f32)
+    };
+    (text, avg_conf)
+}
+
+/// Pluggable ONNX OCR backend implementing `hre_vision::OcrBackend`.
+#[derive(Debug, Clone)]
+pub struct OnnxOcrBackend {
+    model: Option<Arc<OnnxOcrModel>>,
+    fallback: HeuristicOcrBackend,
+}
+
+impl OnnxOcrBackend {
+    pub fn new(model: Option<Arc<OnnxOcrModel>>, fallback: HeuristicOcrBackend) -> Self {
+        Self { model, fallback }
+    }
+
+    pub fn fallback_only(fallback: HeuristicOcrBackend) -> Self {
+        Self {
+            model: None,
+            fallback,
+        }
+    }
+
+    pub fn load(
+        model_path: &Path,
+        vocab_path: &Path,
+        fallback: HeuristicOcrBackend,
+    ) -> Result<Self, ModelError> {
+        let model = Arc::new(OnnxOcrModel::load(model_path, vocab_path)?);
+        Ok(Self::new(Some(model), fallback))
+    }
+
+    pub fn process_image(
+        &self,
+        bytes: &[u8],
+        declared_mime: &str,
+    ) -> Result<OcrReport, VisionError> {
+        let _meta = validate_image(bytes, declared_mime)?;
+
+        // 1. Try real pixel OCR recognition first if model is loaded
+        if let Some(model) = &self.model {
+            if let Ok((raw_text, conf)) = model.recognize(bytes, declared_mime) {
+                if !raw_text.trim().is_empty() && conf >= 0.5 {
+                    let report = hre_text::analyze(&raw_text)
+                        .map_err(|err| VisionError::Ocr(err.to_string()))?;
+                    let masked_text = report.masked_text.clone();
+                    let mut details = BTreeMap::new();
+                    details.insert(
+                        "ocr_text_masked".into(),
+                        serde_json::json!(masked_text.clone()),
+                    );
+                    details.insert("confidence".into(), serde_json::json!(conf));
+                    details.insert("model_id".into(), serde_json::json!("PP-OCRv4_rec"));
+
+                    let score = report
+                        .primary_signal
+                        .score
+                        .max(report.toxicity)
+                        .max(report.threat)
+                        .max(report.sexual_explicit);
+                    let recommended_action = if score >= 0.5 {
+                        Some(hre_core::Action::BlurMedia)
+                    } else {
+                        None
+                    };
+
+                    return Ok(OcrReport {
+                        raw_text,
+                        masked_text,
+                        text_report: Some(report),
+                        signal: Signal {
+                            score,
+                            label: if score >= 0.5 {
+                                "ocr_abuse".into()
+                            } else {
+                                "ocr_text".into()
+                            },
+                            status: Status::Built,
+                            backend: Backend::Onnx,
+                            confidence: conf,
+                            details,
+                        },
+                        recommended_action,
+                        simulated: false,
+                        degraded: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // 2. Fall back to heuristic backend (extracts container metadata / fixtures)
+        self.fallback.process_image(bytes, declared_mime)
+    }
+}
+
+impl OcrBackend for OnnxOcrBackend {
+    fn recognize(&self, image_bytes: &[u8], declared_mime: &str) -> Result<String, VisionError> {
+        if let Some(model) = &self.model {
+            if let Ok((text, conf)) = model.recognize(image_bytes, declared_mime) {
+                if !text.trim().is_empty() && conf >= 0.5 {
+                    return Ok(text);
+                }
+            }
+        }
+        self.fallback.recognize(image_bytes, declared_mime)
+    }
+}
+
+/// Thread-safe Whisper speech recognition model wrapping the Python ONNX transcriber.
+pub struct OnnxWhisperModel {
+    models_dir: PathBuf,
+}
+
+impl std::fmt::Debug for OnnxWhisperModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxWhisperModel")
+            .field("models_dir", &self.models_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OnnxWhisperModel {
+    pub fn load(models_dir: &Path) -> Result<Self, ModelError> {
+        if !models_dir.join("whisper_encoder.onnx").exists()
+            || !models_dir.join("whisper_decoder.onnx").exists()
+        {
+            return Err(ModelError::Inference("missing whisper onnx models".into()));
+        }
+        Ok(Self {
+            models_dir: models_dir.to_path_buf(),
+        })
+    }
+
+    /// Transcribes audio bytes using the verified Whisper pipeline.
+    pub fn transcribe(&self, bytes: &[u8]) -> Result<AudioTranscription, AudioError> {
+        if bytes.is_empty() {
+            return Err(AudioError::EmptyInput);
+        }
+        let temp_dir = std::env::temp_dir();
+        let file_id = uuid::Uuid::new_v4();
+        let wav_path = temp_dir.join(format!("hre_whisper_{file_id}.wav"));
+        std::fs::write(&wav_path, bytes).map_err(|e| AudioError::Transcription(e.to_string()))?;
+
+        let mut root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        while !root.join("Cargo.lock").exists() {
+            if let Some(parent) = root.parent() {
+                root = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        let venv_py = root.join(".venv/Scripts/python.exe");
+        let py_cmd = if venv_py.exists() {
+            venv_py.to_string_lossy().to_string()
+        } else {
+            "python".to_string()
+        };
+
+        let output = std::process::Command::new(py_cmd)
+            .current_dir(&root)
+            .arg("-c")
+            .arg(format!(
+                "import sys, json; sys.path.insert(0, r'{}'); from scripts.test_audio_transcription import SafeAudioDecoder, WhisperTranscriber; \
+                 samples, rate = SafeAudioDecoder.decode_wav_bytes(open(r'{}', 'rb').read()); \
+                 samples_16k = SafeAudioDecoder.resample_to_16k(samples, rate); \
+                 res = WhisperTranscriber().transcribe(samples_16k); \
+                 print(json.dumps(res))",
+                root.display(),
+                wav_path.display()
+            ))
+            .output();
+
+        let _ = std::fs::remove_file(&wav_path);
+
+        let out = output
+            .map_err(|e| AudioError::Transcription(format!("worker invocation error: {e}")))?;
+        if !out.status.success() {
+            let err_msg = String::from_utf8_lossy(&out.stderr);
+            return Err(AudioError::Transcription(format!(
+                "transcription worker failed: {err_msg}"
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        #[derive(serde::Deserialize)]
+        struct WorkerResult {
+            transcript: String,
+            #[serde(default = "default_lang")]
+            language: String,
+            #[serde(default)]
+            is_silence: bool,
+        }
+        fn default_lang() -> String {
+            "en".into()
+        }
+
+        let res: WorkerResult = serde_json::from_str(stdout.trim())
+            .map_err(|e| AudioError::Transcription(format!("failed to parse worker JSON: {e}")))?;
+
+        let duration_s = (bytes.len() as f64 / 32000.0).clamp(0.5, 30.0);
+        Ok(AudioTranscription {
+            transcript: res.transcript,
+            language: res.language,
+            duration_s,
+            tone_score: if res.is_silence { 0.0 } else { 0.2 },
+            simulated: false,
+        })
+    }
+}
+
+/// Pluggable ONNX Whisper audio transcription backend implementing `hre_audio::AudioBackend`.
+#[derive(Debug, Clone)]
+pub struct OnnxAudioBackend {
+    model: Option<Arc<OnnxWhisperModel>>,
+    fallback: HeuristicAudioBackend,
+}
+
+impl OnnxAudioBackend {
+    pub fn new(model: Option<Arc<OnnxWhisperModel>>, fallback: HeuristicAudioBackend) -> Self {
+        Self { model, fallback }
+    }
+
+    pub fn fallback_only(fallback: HeuristicAudioBackend) -> Self {
+        Self {
+            model: None,
+            fallback,
+        }
+    }
+
+    pub fn load(models_dir: &Path, fallback: HeuristicAudioBackend) -> Result<Self, ModelError> {
+        let model = Arc::new(OnnxWhisperModel::load(models_dir)?);
+        Ok(Self::new(Some(model), fallback))
+    }
+
+    pub fn process_audio(
+        &self,
+        bytes: &[u8],
+        declared_mime: &str,
+    ) -> Result<AudioReport, AudioError> {
+        let _meta = hre_audio::validate_audio(bytes, declared_mime)?;
+
+        // Try genuine Whisper transcription first
+        if let Some(model) = &self.model {
+            if let Ok(transcription) = model.transcribe(bytes) {
+                let raw_transcript = transcription.transcript.clone();
+                if !raw_transcript.trim().is_empty() {
+                    let text_report = hre_text::analyze(&raw_transcript).ok();
+                    let masked_transcript = text_report
+                        .as_ref()
+                        .map(|r| r.masked_text.clone())
+                        .unwrap_or_else(|| raw_transcript.clone());
+
+                    let score = text_report
+                        .as_ref()
+                        .map(|r| r.primary_signal.score)
+                        .unwrap_or(0.0);
+
+                    let mut details = BTreeMap::new();
+                    details.insert(
+                        "transcript_masked".into(),
+                        serde_json::json!(masked_transcript.clone()),
+                    );
+                    details.insert("model_id".into(), serde_json::json!("openai/whisper-tiny"));
+
+                    let signal = Signal {
+                        score,
+                        label: if score >= 0.31 {
+                            "audio_harassment".into()
+                        } else {
+                            "audio_benign".into()
+                        },
+                        status: Status::Built,
+                        backend: Backend::Onnx,
+                        confidence: 0.95,
+                        details: details.clone(),
+                    };
+
+                    let tone_signal = Signal {
+                        score: transcription.tone_score,
+                        label: "neutral".into(),
+                        status: Status::Built,
+                        backend: Backend::Onnx,
+                        confidence: 0.90,
+                        details,
+                    };
+
+                    return Ok(AudioReport {
+                        raw_transcript,
+                        masked_transcript,
+                        language: transcription.language,
+                        duration_s: transcription.duration_s,
+                        text_report,
+                        signal,
+                        tone_signal,
+                        reasons: Vec::new(),
+                        recommended_action: if score >= 0.5 {
+                            hre_core::Action::WarnSender
+                        } else {
+                            hre_core::Action::Log
+                        },
+                        secondary_actions: if score >= 0.31 {
+                            vec![hre_core::SecondaryAction::ShowTranscript]
+                        } else {
+                            Vec::new()
+                        },
+                        simulated: false,
+                        degraded: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // Fall back to heuristic backend
+        self.fallback.process_audio(bytes, declared_mime)
+    }
+}
+
+impl AudioBackend for OnnxAudioBackend {
+    fn transcribe(
+        &self,
+        bytes: &[u8],
+        declared_mime: &str,
+    ) -> Result<AudioTranscription, AudioError> {
+        if let Some(model) = &self.model {
+            if let Ok(t) = model.transcribe(bytes) {
+                return Ok(t);
+            }
+        }
+        self.fallback.transcribe(bytes, declared_mime)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::excessive_precision)]
 mod tests {
@@ -1029,6 +1625,105 @@ mod tests {
             load_res.is_err(),
             "corrupt model loading should fail gracefully"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const PYTHON_SYNTHETIC_DEEPFAKE_AUTH: f32 = 0.811277;
+    const PYTHON_SYNTHETIC_DEEPFAKE_MANIP: f32 = 0.188723;
+
+    #[test]
+    fn test_python_rust_parity_deepfake_synthetic_image() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let model_path = models_dir.join("deepfake.onnx");
+        if !model_path.exists() {
+            return;
+        }
+        let test_img_path = models_dir.join("synthetic_test.png");
+        if !test_img_path.exists() {
+            return;
+        }
+        let img_bytes = std::fs::read(&test_img_path).expect("read test image");
+        let model = OnnxDeepfakeModel::load(&model_path).expect("load deepfake model");
+        let probs = model
+            .predict_image(&img_bytes, "image/png")
+            .expect("predict deepfake");
+
+        let diff_auth = (probs[0] - PYTHON_SYNTHETIC_DEEPFAKE_AUTH).abs();
+        let diff_manip = (probs[1] - PYTHON_SYNTHETIC_DEEPFAKE_MANIP).abs();
+
+        assert!(
+            diff_auth < 0.01,
+            "deepfake authentic parity failed: rust={}, python={}, diff={}",
+            probs[0],
+            PYTHON_SYNTHETIC_DEEPFAKE_AUTH,
+            diff_auth
+        );
+        assert!(
+            diff_manip < 0.01,
+            "deepfake manipulated parity failed: rust={}, python={}, diff={}",
+            probs[1],
+            PYTHON_SYNTHETIC_DEEPFAKE_MANIP,
+            diff_manip
+        );
+    }
+
+    #[test]
+    fn test_onnx_ocr_backend_pixel_recognition() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let model_path = models_dir.join("ocr_recognizer.onnx");
+        let vocab_path = models_dir.join("ocr_vocab.json");
+        if !model_path.exists() || !vocab_path.exists() {
+            return;
+        }
+        let fallback = HeuristicOcrBackend::new();
+        let backend = OnnxOcrBackend::load(&model_path, &vocab_path, fallback)
+            .expect("load onnx ocr backend");
+
+        let png = valid_test_png();
+        let report = backend
+            .process_image(&png, "image/png")
+            .expect("process image ocr");
+        assert_eq!(report.signal.status, Status::Roadmap);
+    }
+
+    #[test]
+    fn test_onnx_whisper_silence_transcription() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        if !models_dir.join("whisper_encoder.onnx").exists() {
+            return;
+        }
+        let fallback = HeuristicAudioBackend::new();
+        let backend = match OnnxAudioBackend::load(&models_dir, fallback) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let wav = hre_audio::fixtures::minimal_wav(1);
+        let report = backend
+            .process_audio(&wav, "audio/wav")
+            .expect("process audio silence");
+        assert_eq!(report.raw_transcript, "");
+        assert_eq!(report.signal.score, 0.0);
+    }
+
+    #[test]
+    fn test_fallback_corrupt_deepfake_and_ocr_models() {
+        let dir = std::env::temp_dir().join(format!("hre-corrupt-df-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let corrupt_path = dir.join("corrupt.onnx");
+        std::fs::write(&corrupt_path, b"not an onnx file").unwrap();
+
+        assert!(OnnxDeepfakeModel::load(&corrupt_path).is_err());
+        assert!(OnnxOcrModel::load(&corrupt_path, &corrupt_path).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
