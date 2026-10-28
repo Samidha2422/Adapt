@@ -863,6 +863,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "hre-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hre-calls",
+ "hre-connectors",
+ "hre-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "hre-connectors"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hre-core",
+ "http",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "hre-core"
 version = "0.1.0"
 dependencies = [

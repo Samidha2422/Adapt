@@ -129,7 +129,7 @@ This appendix inventories research scope. All actual platform integrations are R
 | P10 | Anonymous apps/forums | F1/F4/F9; C10 | Content scoring possible by contract; identity inference unavailable. | Roadmap | [ ] |
 | P11 | Email/workplace: Slack/Teams | F2/F3; 2.1/2.5 | Future scoped connector; installation/admin/scopes unverified. | Roadmap | [ ] |
 | P12 | Location/tracking tools | 2.4/2.6/2.8 | No location surveillance ingestion; Roadmap. | Roadmap | [ ] |
-| P13 | Telegram bot and Discord bot DMs | F1/F5/F7; C2 | Only content delivered to authorized bot; permission sources pending. | Roadmap | [ ] |
+| P13 | Telegram bot and Discord bot DMs | F1/F5/F7; C2 | Standalone daemon binaries (hre-discord & hre-telegram) + typed HreClient; verified passing in connector_tests.rs and clippy. | Built | [x] |
 | P14 | Instagram/Facebook professional comment integration | F1/F4; Deliverable4 | C-owned stretch; login flow/permissions/access level must be checked; no universal Page-link prerequisite asserted. | Roadmap | [ ] |
 | P15 | WhatsApp business messaging | C9/C11 | No personal-chat scanner promised; business terms unverified. | Roadmap | [ ] |
 | P16 | Reddit/Matrix/Mastodon public APIs | F1/F4; C9 | Future connector; current terms/scopes unverified. | Roadmap | [ ] |
