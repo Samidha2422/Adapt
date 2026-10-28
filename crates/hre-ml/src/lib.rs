@@ -1,6 +1,9 @@
 //! Model manifest verification, honest fallback selection, and ONNX Runtime inference.
 pub mod onnx;
-pub use onnx::{OnnxBehaviorModel, OnnxTextBackend, OnnxTextModel, TEXT_MODEL_LABELS};
+pub use onnx::{
+    OnnxBehaviorModel, OnnxImageBackend, OnnxNsfwModel, OnnxTextBackend, OnnxTextModel,
+    TEXT_MODEL_LABELS,
+};
 
 use hre_core::Backend;
 use serde::{Deserialize, Serialize};

@@ -8,7 +8,8 @@ use hre_text::{
     pii::mask_pii,
     TextBackend, TextError, TextReport,
 };
-use ndarray::Array2;
+use hre_vision::{validate_image, HeuristicImageBackend, ImageAnalysis, ImageBackend, VisionError};
+use ndarray::{Array2, Array4};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 use std::collections::BTreeMap;
@@ -502,10 +503,217 @@ impl TextBackend for OnnxTextBackend {
     }
 }
 
+/// Preprocess raw image bytes for the ViT NSFW model:
+/// 1. Validates image MIME and dimensions using hre_vision::validate_image.
+/// 2. Decodes image into RGB format.
+/// 3. Resizes to 224x224 using bilinear interpolation (Triangle filter).
+/// 4. Normalizes to [-1.0, 1.0] with mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5] in NCHW order.
+pub fn preprocess_image(bytes: &[u8], declared_mime: &str) -> Result<Array4<f32>, VisionError> {
+    let _meta = validate_image(bytes, declared_mime)?;
+    let dynamic_img = image::load_from_memory(bytes).map_err(|_| VisionError::TruncatedImage)?;
+    let rgb = dynamic_img
+        .resize_exact(224, 224, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+
+    let mut tensor = Array4::<f32>::zeros((1, 3, 224, 224));
+    for y in 0..224 {
+        for x in 0..224 {
+            let p = rgb.get_pixel(x as u32, y as u32);
+            // ViT Normalization: (pixel / 255.0 - 0.5) / 0.5
+            tensor[[0, 0, y, x]] = (p[0] as f32 / 255.0 - 0.5) / 0.5;
+            tensor[[0, 1, y, x]] = (p[1] as f32 / 255.0 - 0.5) / 0.5;
+            tensor[[0, 2, y, x]] = (p[2] as f32 / 255.0 - 0.5) / 0.5;
+        }
+    }
+    Ok(tensor)
+}
+
+/// Thread-safe ONNX model wrapper for NSFW image classification (Falconsai/nsfw_image_detection).
+pub struct OnnxNsfwModel {
+    session: Mutex<Session>,
+}
+
+impl std::fmt::Debug for OnnxNsfwModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnnxNsfwModel").finish_non_exhaustive()
+    }
+}
+
+impl OnnxNsfwModel {
+    /// Load an ONNX NSFW model from disk.
+    pub fn load(model_path: &Path) -> Result<Self, ModelError> {
+        let env = get_or_init_ort_env()?;
+        let session = Session::builder(env)
+            .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| ModelError::Inference(format!("optimization level error: {e}")))?
+            .commit_from_file(model_path)
+            .map_err(|e| {
+                ModelError::Inference(format!(
+                    "failed to load ONNX NSFW model from {}: {e}",
+                    model_path.display()
+                ))
+            })?;
+        Ok(Self {
+            session: Mutex::new(session),
+        })
+    }
+
+    /// Predict the [normal, nsfw] probabilities for the input image tensor [1, 3, 224, 224].
+    pub fn predict(&self, tensor: Array4<f32>) -> Result<[f32; 2], ModelError> {
+        if tensor.shape() != [1, 3, 224, 224] {
+            return Err(ModelError::Invalid(
+                "expected input tensor shape [1, 3, 224, 224]",
+            ));
+        }
+        if tensor.iter().any(|v| !v.is_finite()) {
+            return Err(ModelError::Invalid("non-finite value in image tensor"));
+        }
+        let input_tensor = Tensor::from_array(tensor)
+            .map_err(|e| ModelError::Inference(format!("failed to create image tensor: {e}")))?;
+
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| ModelError::Inference("ONNX nsfw session mutex poisoned".into()))?;
+
+        let outputs = session
+            .run(ort::inputs!["pixel_values" => input_tensor])
+            .map_err(|e| ModelError::Inference(format!("image inference run error: {e}")))?;
+
+        let probs = outputs["probabilities"]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| {
+                ModelError::Inference(format!("failed to extract image probabilities: {e}"))
+            })?;
+        let slice = probs.1;
+
+        if slice.len() != 2 {
+            return Err(ModelError::Inference(format!(
+                "expected 2 output probabilities, got {}",
+                slice.len()
+            )));
+        }
+
+        let normal = slice[0];
+        let nsfw = slice[1];
+        if !normal.is_finite()
+            || !nsfw.is_finite()
+            || !(0.0..=1.0).contains(&normal)
+            || !(0.0..=1.0).contains(&nsfw)
+        {
+            return Err(ModelError::Inference(format!(
+                "output probability out of range: normal={normal}, nsfw={nsfw}"
+            )));
+        }
+        Ok([normal, nsfw])
+    }
+}
+
+/// Pluggable ONNX image inference backend implementing `hre_vision::ImageBackend`.
+#[derive(Debug, Clone)]
+pub struct OnnxImageBackend {
+    model: Arc<OnnxNsfwModel>,
+    threshold: f64,
+    fallback: HeuristicImageBackend,
+}
+
+impl OnnxImageBackend {
+    /// Create a new ONNX image backend.
+    pub fn new(model: Arc<OnnxNsfwModel>, threshold: f64, fallback: HeuristicImageBackend) -> Self {
+        Self {
+            model,
+            threshold,
+            fallback,
+        }
+    }
+
+    /// Load the model from file and wrap with fallback.
+    pub fn load(
+        model_path: &Path,
+        threshold: f64,
+        fallback: HeuristicImageBackend,
+    ) -> Result<Self, ModelError> {
+        let model = Arc::new(OnnxNsfwModel::load(model_path)?);
+        Ok(Self::new(model, threshold, fallback))
+    }
+}
+
+impl ImageBackend for OnnxImageBackend {
+    fn analyze(&self, bytes: &[u8], declared_mime: &str) -> Result<ImageAnalysis, VisionError> {
+        // If demo override is configured and matched in fallback, honor simulated verdict immediately.
+        let fallback_analysis = self.fallback.analyze(bytes, declared_mime)?;
+        if fallback_analysis.simulated {
+            return Ok(fallback_analysis);
+        }
+
+        let tensor = preprocess_image(bytes, declared_mime)?;
+        let probs = match self.model.predict(tensor) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    "ONNX image inference failed ({e}); falling back to heuristic backend"
+                );
+                return Ok(fallback_analysis);
+            }
+        };
+
+        let normal_score = f64::from(probs[0]);
+        let nsfw_score = f64::from(probs[1]);
+        let recommended_action = if nsfw_score >= self.threshold {
+            Some(hre_core::Action::BlurMedia)
+        } else {
+            None
+        };
+
+        let mut details = BTreeMap::new();
+        details.insert("normal".into(), serde_json::json!(normal_score));
+        details.insert("nsfw".into(), serde_json::json!(nsfw_score));
+        details.insert(
+            "sha256".into(),
+            serde_json::json!(&fallback_analysis.sha256),
+        );
+        details.insert("p_hash".into(), serde_json::json!(fallback_analysis.p_hash));
+        details.insert(
+            "model_id".into(),
+            serde_json::json!("Falconsai/nsfw_image_detection"),
+        );
+
+        let label = if nsfw_score >= self.threshold {
+            "nsfw".to_string()
+        } else {
+            "normal".to_string()
+        };
+
+        let confidence = if nsfw_score >= self.threshold {
+            nsfw_score
+        } else {
+            normal_score
+        };
+
+        Ok(ImageAnalysis {
+            signal: Signal {
+                score: nsfw_score,
+                label,
+                status: Status::Built,
+                backend: Backend::Onnx,
+                confidence,
+                details,
+            },
+            p_hash: fallback_analysis.p_hash,
+            sha256: fallback_analysis.sha256,
+            recommended_action,
+            simulated: false,
+            degraded: Vec::new(),
+        })
+    }
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::excessive_precision)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     const GOLDEN_MSG_FEATURES: [f32; 47] = [
         3.0, 0.25, 1.0, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // 1h
@@ -535,8 +743,164 @@ mod tests {
             PathBuf::from("../../../models"),
         ];
         candidates.into_iter().find(|c| {
-            c.join("behavior_msg.onnx").exists() && c.join("text_fine_tuned.onnx").exists()
+            c.join("behavior_msg.onnx").exists()
+                && c.join("text_fine_tuned.onnx").exists()
+                && c.join("nsfw.onnx").exists()
         })
+    }
+
+    const PYTHON_SYNTHETIC_NORMAL: f32 = 0.99960452;
+    const PYTHON_SYNTHETIC_NSFW: f32 = 0.00039555;
+
+    fn valid_test_png() -> Vec<u8> {
+        vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2,
+            8, 2, 0, 0, 0, 253, 212, 154, 115, 0, 0, 0, 16, 73, 68, 65, 84, 120, 156, 99, 252, 207,
+            0, 2, 76, 96, 146, 1, 0, 13, 29, 1, 3, 130, 201, 113, 255, 0, 0, 0, 0, 73, 69, 78, 68,
+            174, 66, 96, 130,
+        ]
+    }
+
+    #[test]
+    fn test_preprocess_image_shape_and_range() {
+        let png = valid_test_png();
+        let tensor = preprocess_image(&png, "image/png").expect("preprocess valid png");
+        assert_eq!(tensor.shape(), [1, 3, 224, 224]);
+        for &val in tensor.iter() {
+            assert!(
+                (-1.01..=1.01).contains(&val),
+                "preprocessed value out of range: {val}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_preprocess_image_rejects_mime_mismatch_and_truncated() {
+        let png = hre_vision::fixtures::minimal_png(10, 10);
+        assert!(matches!(
+            preprocess_image(&png, "image/jpeg"),
+            Err(VisionError::MimeMismatch { .. })
+        ));
+
+        let truncated = vec![0x89, b'P', b'N'];
+        assert_eq!(
+            preprocess_image(&truncated, "image/png"),
+            Err(VisionError::TruncatedImage)
+        );
+    }
+
+    #[test]
+    fn test_python_rust_parity_nsfw_synthetic_image() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let model_path = models_dir.join("nsfw.onnx");
+        if !model_path.exists() {
+            return;
+        }
+        let test_img_path = models_dir.join("synthetic_test.png");
+        if !test_img_path.exists() {
+            return;
+        }
+        let img_bytes = std::fs::read(&test_img_path).expect("read test image");
+        let tensor = preprocess_image(&img_bytes, "image/png").expect("preprocess synthetic test");
+        let model = OnnxNsfwModel::load(&model_path).expect("load nsfw model");
+        let probs = model.predict(tensor).expect("predict nsfw");
+
+        let diff_normal = (probs[0] - PYTHON_SYNTHETIC_NORMAL).abs();
+        let diff_nsfw = (probs[1] - PYTHON_SYNTHETIC_NSFW).abs();
+
+        assert!(
+            diff_normal < 0.01,
+            "normal parity failed: rust={}, python={}, diff={}",
+            probs[0],
+            PYTHON_SYNTHETIC_NORMAL,
+            diff_normal
+        );
+        assert!(
+            diff_nsfw < 0.01,
+            "nsfw parity failed: rust={}, python={}, diff={}",
+            probs[1],
+            PYTHON_SYNTHETIC_NSFW,
+            diff_nsfw
+        );
+    }
+
+    #[test]
+    fn test_onnx_image_backend_normal_and_action() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let model_path = models_dir.join("nsfw.onnx");
+        if !model_path.exists() {
+            return;
+        }
+        let fallback = HeuristicImageBackend::new();
+        let backend =
+            OnnxImageBackend::load(&model_path, 0.50, fallback).expect("load onnx image backend");
+
+        let png = valid_test_png();
+        let analysis = backend.analyze(&png, "image/png").expect("analyze png");
+
+        assert_eq!(analysis.signal.backend, Backend::Onnx);
+        assert_eq!(analysis.signal.status, Status::Built);
+        assert_eq!(analysis.signal.label, "normal");
+        assert!(!analysis.simulated);
+        assert!(analysis.signal.score < 0.10);
+        assert_eq!(analysis.recommended_action, None);
+        assert!(analysis.degraded.is_empty());
+    }
+
+    #[test]
+    fn test_onnx_image_backend_demo_override_is_simulated() {
+        let models_dir = match find_models_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let model_path = models_dir.join("nsfw.onnx");
+        if !model_path.exists() {
+            return;
+        }
+        let png = valid_test_png();
+        let mut hasher = sha2::Sha256::new();
+        sha2::Digest::update(&mut hasher, &png);
+        let sha256 = format!("{:x}", sha2::Digest::finalize(hasher));
+
+        let fallback = HeuristicImageBackend::new().with_override(&sha256, 0.95);
+        let backend =
+            OnnxImageBackend::load(&model_path, 0.50, fallback).expect("load onnx image backend");
+
+        let analysis = backend
+            .analyze(&png, "image/png")
+            .expect("analyze png with override");
+        assert_eq!(analysis.signal.status, Status::Simulated);
+        assert!(analysis.simulated);
+        assert_eq!(
+            analysis.recommended_action,
+            Some(hre_core::Action::BlurMedia)
+        );
+        assert!(analysis
+            .degraded
+            .iter()
+            .any(|d| d == "image.demo_override_simulated"));
+    }
+
+    #[test]
+    fn test_fallback_corrupt_nsfw_model() {
+        let dir = std::env::temp_dir().join(format!("hre-corrupt-nsfw-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let corrupt_path = dir.join("corrupt_nsfw.onnx");
+        std::fs::write(&corrupt_path, b"not an onnx file").unwrap();
+
+        let load_res = OnnxNsfwModel::load(&corrupt_path);
+        assert!(
+            load_res.is_err(),
+            "corrupt nsfw model loading should fail gracefully"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

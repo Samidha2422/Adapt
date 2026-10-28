@@ -18,6 +18,15 @@ fn config() -> EngineConfig {
         ..Default::default()
     }
 }
+fn valid_test_png() -> Vec<u8> {
+    vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 2,
+        0, 0, 0, 253, 212, 154, 115, 0, 0, 0, 16, 73, 68, 65, 84, 120, 156, 99, 252, 207, 0, 2, 76,
+        96, 146, 1, 0, 13, 29, 1, 3, 130, 201, 113, 255, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+        130,
+    ]
+}
+
 fn envelope() -> Value {
     json!({"event_id":uuid::Uuid::new_v4(),"kind":"image","occurred_at":"2026-10-28T12:00:00Z",
         "sender_id":"private-sender","recipient_id":"private-recipient","platform":"demo-chat",
@@ -300,4 +309,24 @@ fn generated_contract_describes_actual_multipart_upload() {
             ["multipart/form-data"]
             .is_object()
     );
+}
+
+#[tokio::test]
+async fn onnx_image_inference_runs_when_model_present() {
+    let models_dir = std::path::Path::new("../../models");
+    if !models_dir.join("nsfw.onnx").exists() {
+        return;
+    }
+    let mut cfg = config();
+    cfg.models_dir = "../../models".into();
+    let app = hre_api::router(cfg, false).await.unwrap();
+    let event = envelope();
+    let bytes = valid_test_png();
+    let (status, result) = upload(&app, &event, &bytes, "image/png").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["signals"]["image"]["backend"], "onnx");
+    assert_eq!(result["signals"]["image"]["status"], "built");
+    assert_eq!(result["signals"]["image"]["label"], "normal");
+    assert!(result["signals"]["image"]["score"].as_f64().unwrap() < 0.10);
+    assert_eq!(result["simulated"], false);
 }

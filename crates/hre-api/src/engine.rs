@@ -2,7 +2,6 @@ use crate::{mock, ApiError};
 use axum::http::StatusCode;
 use hre_core::*;
 use hre_store::{EventKind as StoredKind, Store, StoredEvent};
-use hre_vision::ImageBackend;
 use std::{collections::BTreeMap, time::Instant};
 use tokio::sync::Mutex;
 
@@ -14,7 +13,7 @@ pub(crate) struct Engine {
     behavior: hre_behavior::BehaviorConfig,
     fusion: hre_fusion::FusionConfig,
     registry: hre_ml::ModelRegistry,
-    image: hre_vision::HeuristicImageBackend,
+    image: std::sync::Arc<dyn hre_vision::ImageBackend>,
     ocr: hre_vision::HeuristicOcrBackend,
     pub(crate) audio: hre_audio::HeuristicAudioBackend,
     pub(crate) jobs: hre_audio::JobManager,
@@ -26,8 +25,9 @@ pub(crate) struct Engine {
 }
 impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
+        let demo_mode = config.demo_mode;
         let models_dir = config.models_dir.clone();
-        let (mut behavior, fusion, registry, text_backend, onnx_behavior) =
+        let (mut behavior, fusion, registry, text_backend, onnx_behavior, image) =
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let behavior = match std::fs::read_to_string("config/behavior_rules.toml") {
                     Ok(text) => hre_behavior::BehaviorConfig::parse(&text)?,
@@ -81,12 +81,46 @@ impl Engine {
                     }
                 };
 
+                let nsfw_threshold = manifest
+                    .as_ref()
+                    .and_then(|m| {
+                        m.models
+                            .iter()
+                            .find(|entry| entry.task == "nsfw")
+                    })
+                    .and_then(|entry| entry.thresholds.get("decision").copied())
+                    .unwrap_or(0.50);
+
+                let heuristic_image = if demo_mode {
+                    hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
+                        "config/demo_overrides.toml",
+                    ))
+                } else {
+                    hre_vision::HeuristicImageBackend::new()
+                };
+
+                let image: std::sync::Arc<dyn hre_vision::ImageBackend> =
+                    match hre_ml::OnnxImageBackend::load(
+                        &models_path.join("nsfw.onnx"),
+                        nsfw_threshold,
+                        heuristic_image.clone(),
+                    ) {
+                        Ok(b) => std::sync::Arc::new(b),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load ONNX NSFW model ({e}); using heuristic image backend"
+                            );
+                            std::sync::Arc::new(heuristic_image)
+                        }
+                    };
+
                 Ok((
                     behavior,
                     fusion,
                     hre_ml::ModelRegistry::load(models_path),
                     text_backend,
                     onnx_behavior,
+                    image,
                 ))
             })
             .await??;
@@ -97,17 +131,6 @@ impl Engine {
         } else if config.night_timezone != "UTC" {
             anyhow::bail!("night_timezone currently supports Asia/Kolkata or UTC");
         }
-        let demo_mode = config.demo_mode;
-        let image = tokio::task::spawn_blocking(move || {
-            if demo_mode {
-                hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
-                    "config/demo_overrides.toml",
-                ))
-            } else {
-                hre_vision::HeuristicImageBackend::new()
-            }
-        })
-        .await?;
         let ocr = hre_vision::HeuristicOcrBackend::new();
         let audio = hre_audio::HeuristicAudioBackend::new();
         let jobs = hre_audio::JobManager::new();
@@ -245,7 +268,7 @@ impl Engine {
                     analysis
                         .degraded
                         .push("image.perceptual_hash_unavailable".into());
-                    if !analysis.simulated {
+                    if !analysis.simulated && analysis.signal.backend != Backend::Onnx {
                         analysis.signal.status = Status::Roadmap;
                         analysis.signal.backend = Backend::Disabled;
                         analysis.signal.label = "image_model_unavailable".into();

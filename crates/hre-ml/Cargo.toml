@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 hre-core = { path = "../hre-core" }
 hre-text = { path = "../hre-text" }
+hre-vision = { path = "../hre-vision" }
+image = { workspace = true }
 ndarray = { workspace = true }
 ort = { workspace = true }
 tokenizers = { workspace = true }
