@@ -59,3 +59,13 @@ No request permits editing a different owner's crate. Continue lead walking-skel
   - `hre_text::HeuristicTextBackend`: `TextBackend` implementation returning `hre_core::Signal` with multi-label breakdown in `details`, `Status::Built`, `Backend::Heuristic`, and `degraded: ["text.onnx_missing"]`.
   - 23 passing tests (15 unit, 8 integration) including property testing with proptest; zero clippy warnings with all deny lints enabled (`unwrap_used`, `expect_used`, `panic`).
   - Request: Lead to add `"crates/hre-text"` to root `Cargo.toml` `members`, and wire `hre_text::analyze_detailed` into `crates/hre-api/src/engine.rs` to replace the temporary two-phrase explicit-threat shortcut.
+
+| REQ21 | Lead | Review proposed Python feature extraction parity and golden vector fixture in `training/fixtures/golden_vector.json` | Parity verification between Python generator A and Rust `hre-behavior` | Implemented on branch a-text/text-pipeline; all 7 Python parity tests passing |
+
+### REQ21 A4 Synthetic Generator A handoff (verified)
+
+- Implemented `training/src/hre_training/generator_a.py`, `features.py`, CLI `training/generator_a.py`, and test suite `training/tests/test_generator_a.py`:
+  - 14 scenario classes generated deterministically with seeded RNG (normal, heavy_benign, polite_stalker, escalating_stalker, post_block_contacter, pile_on, bully, cyberflasher, sextortion, silent_caller, night_caller, post_block_caller, new_number_caller, noisy_ambiguous).
+  - 47-feature vector extraction exactly matches `docs/FEATURES.md` and `hre-behavior::extract_features` within 1e-4 tolerance.
+  - Golden vector fixture exported to `training/fixtures/golden_vector.json` and 14 scenario samples exported to `training/fixtures/synthetic_samples.json`.
+  - All 7 tests passing in 0.014s (`test_same_seed_same_events`, `test_seed_changes_sample`, `test_chronology_and_matching_payloads`, `test_healthy_reciprocity_and_refusal_sequence`, `test_no_real_identifiers`, `test_golden_vector_order_and_values`, `test_generator_a_training_only`).
