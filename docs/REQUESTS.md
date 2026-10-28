@@ -47,3 +47,15 @@ No request permits editing a different owner's crate. Continue lead walking-skel
 - Supply contract-compatible message model and exporter evidence: frozen 47-feature order matching `hre_behavior::feature_order()`, a golden feature vector, labels, license, preprocessing, probability/range and numerical parity evidence. For calls, obtain owner agreement on the proposed 8-feature order and missing-value policy plus golden vectors before activation.
 - Integrate runtime selection with the behavior owner: current behavior analysis constructs the heuristic directly. Preserve deterministic fallback on missing/invalid artifacts or runtime, verify canonical path and SHA-256, parse the model, validate exact fixed input/output metadata and manifest labels, and distinguish artifact verification, runtime readiness and actual inference. Hash verification alone must not report ONNX active.
 - This session has no available Luna delegation tool; no builds, tests, downloads or runtime checks were performed. Existing `hre-ml` tests cover missing model and a hash-matching malformed artifact remaining heuristic; they do not prove runtime parsing or feature-enabled behavior.
+
+| REQ20 | Lead | Add `crates/hre-text` to root `Cargo.toml` `members`, add logged recipe for text pipeline testing, and integrate `hre_text::HeuristicTextBackend` into `hre-api` | Full workspace integration of text analysis; replace two-phrase shortcut in API engine | Implemented on branch a-text/text-pipeline; ready for Lead integration |
+
+### REQ20 A3 text pipeline handoff (verified)
+
+- Implemented `crates/hre-text` with deterministic model-free baseline under branch `a-text/text-pipeline`:
+  - `hre_text::normalize`: conservative Unicode/homoglyph/spacing/repeated characters reduction, quote preservation for quoted abuse context.
+  - `hre_text::detect_and_mask_pii`: Indian-aware masking for emails, phones (+91/10-digit 6-9), Aadhaar (Verhoeff checksum validated), PAN, UPI VPAs, and PIN codes (6-digit with address cue context check).
+  - `hre_text::analyze_cues`: threat, coercion, leak/payment cues, location cues, sextortion pattern (`simulated = true`), and quoted abuse detection.
+  - `hre_text::HeuristicTextBackend`: `TextBackend` implementation returning `hre_core::Signal` with multi-label breakdown in `details`, `Status::Built`, `Backend::Heuristic`, and `degraded: ["text.onnx_missing"]`.
+  - 23 passing tests (15 unit, 8 integration) including property testing with proptest; zero clippy warnings with all deny lints enabled (`unwrap_used`, `expect_used`, `panic`).
+  - Request: Lead to add `"crates/hre-text"` to root `Cargo.toml` `members`, and wire `hre_text::analyze_detailed` into `crates/hre-api/src/engine.rs` to replace the temporary two-phrase explicit-threat shortcut.
