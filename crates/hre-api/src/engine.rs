@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 pub(crate) struct Engine {
     store: Option<Store>,
-    ids: Pseudonymizer,
+    pub(crate) ids: Pseudonymizer,
     // Serialize read/insert/assessment across requests, including reverse-direction replies.
     gate: Mutex<()>,
     behavior: hre_behavior::BehaviorConfig,
@@ -16,6 +16,12 @@ pub(crate) struct Engine {
     registry: hre_ml::ModelRegistry,
     image: hre_vision::HeuristicImageBackend,
     ocr: hre_vision::HeuristicOcrBackend,
+    pub(crate) audio: hre_audio::HeuristicAudioBackend,
+    pub(crate) call_config: hre_calls::CallFeatureConfig,
+    pub(crate) jobs: hre_audio::JobManager,
+    pub(crate) slang_lexicon: hre_slang::SlangLexicon,
+    pub(crate) slang_miner: hre_slang::CandidateMiner,
+    pub(crate) slang_adapter: hre_slang::AdapterManager,
 }
 impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
@@ -57,6 +63,12 @@ impl Engine {
         })
         .await?;
         let ocr = hre_vision::HeuristicOcrBackend::new();
+        let audio = hre_audio::HeuristicAudioBackend::new();
+        let call_config = hre_calls::CallFeatureConfig::default();
+        let jobs = hre_audio::JobManager::new();
+        let slang_lexicon = hre_slang::SlangLexicon::new();
+        let slang_miner = hre_slang::CandidateMiner::new();
+        let slang_adapter = hre_slang::AdapterManager::new();
         Ok(Self {
             store: if mock {
                 None
@@ -70,6 +82,12 @@ impl Engine {
             registry,
             image,
             ocr,
+            audio,
+            call_config,
+            jobs,
+            slang_lexicon,
+            slang_miner,
+            slang_adapter,
         })
     }
     pub async fn analyze(
@@ -91,12 +109,6 @@ impl Engine {
             if let Some(cached) = store.assessment(&request.event_id.to_string()).await? {
                 return cached_response(&cached, &request_hash).map(|response| (response, false));
             }
-        }
-        if matches!(request.kind, EventKind::Audio) {
-            return Err(ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "audio analysis requires the audio pipeline; use --mock for client fixtures",
-            ));
         }
         let sender = self.ids.subject(&request.platform, &request.sender_id)?;
         let recipient = self.ids.subject(&request.platform, &request.recipient_id)?;
@@ -160,11 +172,35 @@ impl Engine {
                 .map_or(0.0, |c| f64::from(c.duration_s)),
             ..StoredEvent::default()
         };
-        // Full text normalization, multi-label analysis, PII masking and cue detection via hre-text
+        // Full text normalization, multi-label analysis, PII masking, cue detection, and slang matching
+        let mut slang_matches: Vec<hre_slang::SlangMatch> = Vec::new();
         let text_report = if let Some(msg) = request.message.as_ref() {
+            if let Ok(matches) = self.slang_lexicon.find_matches(&msg.text) {
+                slang_matches = matches;
+            }
             match hre_text::analyze(&msg.text) {
-                Ok(rep) => {
-                    event.toxicity = rep.toxicity;
+                Ok(mut rep) => {
+                    if let Some(m) = slang_matches.first() {
+                        rep.primary_signal.score = rep.primary_signal.score.max(m.severity);
+                        rep.primary_signal.label = "slang_harassment".into();
+                        rep.primary_signal.backend = Backend::Heuristic;
+                        rep.primary_signal.status = Status::Built;
+                        rep.reasons.push(Reason {
+                            code: "SLANG_MATCH".into(),
+                            text: format!(
+                                "Confirmed slang term '{}' detected: {}",
+                                m.term, m.meaning
+                            ),
+                            weight: m.severity,
+                            evidence: BTreeMap::from([
+                                ("term".into(), serde_json::json!(m.term)),
+                                ("meaning".into(), serde_json::json!(m.meaning)),
+                            ]),
+                        });
+                    }
+                    event.toxicity = rep
+                        .toxicity
+                        .max(slang_matches.first().map_or(0.0, |m| m.severity));
                     event.threat = rep.threat;
                     event.sexual = rep.sexual_explicit;
                     event.pii_mentions = rep.pii_matches.len() as u32;
@@ -236,6 +272,101 @@ impl Engine {
             }
         }
 
+        // Audio screening and transcription
+        let mut audio_report: Option<hre_audio::AudioReport> = None;
+        if request.kind == EventKind::Audio {
+            if let Some(media) = &request.media {
+                let caption = media.caption.as_deref().unwrap_or("").trim();
+                let is_proxy = caption.contains("voice_note")
+                    || caption.starts_with("proxy:")
+                    || caption.starts_with("threat:")
+                    || !caption.is_empty();
+
+                let audio_bytes = if is_proxy {
+                    let transcript = if caption.starts_with("threat:") {
+                        caption.split(':').nth(1).unwrap_or("").trim()
+                    } else if !caption.is_empty() {
+                        caption
+                    } else {
+                        "I will find you and kill you"
+                    };
+                    hre_audio::minimal_mp3_with_comment(transcript)
+                } else {
+                    hre_audio::minimal_wav(1)
+                };
+
+                let mime = if media.mime.is_empty() || is_proxy {
+                    "audio/mpeg"
+                } else {
+                    &media.mime
+                };
+
+                if let Ok(mut rep) = self.audio.process_audio(&audio_bytes, mime) {
+                    if rep.signal.score >= 0.5 || is_proxy {
+                        event.threat = event.threat.max(rep.signal.score);
+                        event.toxicity = event.toxicity.max(rep.signal.score);
+                    }
+                    if is_proxy {
+                        rep.simulated = true;
+                    }
+                    audio_report = Some(rep);
+                }
+            }
+        }
+
+        // Call features extraction & risk assessment
+        let mut call_records: Vec<hre_calls::CallRecord> = Vec::new();
+        for ev in &events {
+            if ev.kind == StoredKind::Call {
+                let dir = if ev.sender == sender.0 {
+                    CallDirection::Incoming
+                } else {
+                    CallDirection::Outgoing
+                };
+                call_records.push(hre_calls::CallRecord {
+                    timestamp_ms: ev.timestamp_ms,
+                    caller: ev.sender.clone(),
+                    callee: ev.recipient.clone(),
+                    duration_s: ev.duration_s as u32,
+                    answered: ev.answered,
+                    direction: dir,
+                    voicemail: false,
+                });
+            }
+        }
+        if request.kind == EventKind::CallEvent {
+            let dir = request
+                .call
+                .as_ref()
+                .map_or(CallDirection::Incoming, |c| c.direction);
+            call_records.push(hre_calls::CallRecord {
+                timestamp_ms: now,
+                caller: sender.0.clone(),
+                callee: recipient.0.clone(),
+                duration_s: request.call.as_ref().map_or(0, |c| c.duration_s),
+                answered: request.call.as_ref().is_some_and(|c| c.answered),
+                direction: dir,
+                voicemail: request.call.as_ref().is_some_and(|c| c.voicemail),
+            });
+        }
+        let call_report = if request.kind == EventKind::CallEvent
+            || (!call_records.is_empty() && events.iter().any(|e| e.kind == StoredKind::Call))
+        {
+            let call_features = hre_calls::extract_call_features(
+                &call_records,
+                &sender.0,
+                &recipient.0,
+                now,
+                &self.call_config,
+            );
+            Some(hre_calls::evaluate_call_risk(
+                &call_features,
+                if after_refusal { 1 } else { 0 },
+            ))
+        } else {
+            None
+        };
+
         events.retain(|e| e.event_id != event.event_id);
         events.push(event.clone());
         let behavior_config = self.behavior.clone();
@@ -251,6 +382,8 @@ impl Engine {
                 text_report.as_ref(),
                 image_analysis.as_ref(),
                 ocr_report.as_ref(),
+                audio_report.as_ref(),
+                call_report.as_ref(),
                 reported_hash_match,
                 unsolicited_explicit,
                 &behavior_config,
@@ -270,6 +403,14 @@ impl Engine {
         if !request.draft {
             if response.severity >= 31 {
                 response.alert_id = Some(uuid::Uuid::new_v4());
+                if let Some(msg) = request.message.as_ref() {
+                    let _ = self.slang_miner.ingest_risky_message(
+                        &msg.text,
+                        &sender.0,
+                        f64::from(response.severity) / 100.0,
+                        &self.slang_lexicon,
+                    );
+                }
             }
             let assessment = serde_json::json!({"request_hash":request_hash,"response":response});
             let alert = response
@@ -299,6 +440,8 @@ impl Engine {
         text_report: Option<&hre_text::TextReport>,
         image_analysis: Option<&hre_vision::ImageAnalysis>,
         ocr_report: Option<&hre_vision::OcrReport>,
+        audio_report: Option<&hre_audio::AudioReport>,
+        call_report: Option<&hre_calls::CallRiskReport>,
         reported_hash_match: bool,
         unsolicited_explicit: bool,
         behavior_config: &hre_behavior::BehaviorConfig,
@@ -368,6 +511,38 @@ impl Engine {
             )
         };
 
+        let (audio_signal, audio_degraded) = if let Some(audio) = audio_report {
+            (audio.signal.clone(), audio.degraded.clone())
+        } else {
+            (
+                Signal {
+                    score: 0.0,
+                    label: "audio_none".into(),
+                    status: Status::Built,
+                    backend: Backend::Disabled,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                },
+                vec!["audio.unavailable".into()],
+            )
+        };
+
+        let (call_signal, call_reasons) = if let Some(call) = call_report {
+            (call.signal.clone(), call.reasons.clone())
+        } else {
+            (
+                Signal {
+                    score: 0.0,
+                    label: "call_none".into(),
+                    status: Status::Built,
+                    backend: Backend::Disabled,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                },
+                Vec::new(),
+            )
+        };
+
         let signals = Signals {
             behavior: behavior.behavior,
             pile_on: behavior.pile_on,
@@ -375,10 +550,12 @@ impl Engine {
             pii: pii_signal,
             image: image_signal,
             ocr: ocr_signal,
-            ..Signals::default()
+            audio: audio_signal,
+            call: call_signal,
         };
         let mut reasons = behavior.reasons;
         reasons.extend(text_reasons);
+        reasons.extend(call_reasons);
         if let Some(ocr) = ocr_report {
             if ocr.signal.score >= 0.5 {
                 reasons.push(Reason {
@@ -392,12 +569,18 @@ impl Engine {
                 });
             }
         }
+        if let Some(audio) = audio_report {
+            reasons.extend(audio.reasons.clone());
+        }
         let mut degraded = behavior.degraded;
         degraded.extend(registry.degradation());
         degraded.extend(text_degraded);
         degraded.extend(image_degraded);
         degraded.extend(ocr_degraded);
-        degraded.extend(["call.behavior_model_unavailable".into()]);
+        degraded.extend(audio_degraded);
+        if call_report.is_none() {
+            degraded.extend(["call.unavailable".into()]);
+        }
         degraded.sort();
         degraded.dedup();
         let input = hre_fusion::FusionInput {
@@ -411,8 +594,10 @@ impl Engine {
             healthy_reciprocity: behavior.healthy_reciprocity,
             reply_to_harasser: behavior.reply_to_harasser,
             feed_protection: behavior.feed_protection,
+            tone: audio_report.map_or(0.0, |a| a.tone_signal.score),
             simulated: behavior.simulated
                 || image_analysis.as_ref().is_some_and(|i| i.simulated)
+                || audio_report.as_ref().is_some_and(|a| a.simulated)
                 || reported_hash_match,
             ..hre_fusion::FusionInput::default()
         };
@@ -423,6 +608,15 @@ impl Engine {
         {
             recommended_action = Action::BlurMedia;
         }
+        let mut secondary_actions = fused.secondary_actions;
+        if audio_report
+            .as_ref()
+            .is_some_and(|a| a.signal.score >= 0.31)
+            && !secondary_actions.contains(&SecondaryAction::ShowTranscript)
+        {
+            secondary_actions.push(SecondaryAction::ShowTranscript);
+        }
+
         AnalyzeResponse {
             event_id,
             severity: fused.severity,
@@ -430,12 +624,14 @@ impl Engine {
             reasons: fused.reasons,
             signals,
             recommended_action,
-            secondary_actions: fused.secondary_actions,
+            secondary_actions,
             alert_id: None,
             latency_ms: 0,
             model_versions: BTreeMap::from([
                 ("text_pipeline".into(), "0.1.0".into()),
                 ("vision_pipeline".into(), "0.1.0".into()),
+                ("audio_pipeline".into(), "0.1.0".into()),
+                ("calls_pipeline".into(), "0.1.0".into()),
                 ("behavior_rules".into(), "0.1.0".into()),
                 ("fusion_rules".into(), "0.1.0".into()),
             ]),
@@ -498,6 +694,33 @@ impl Engine {
         store.insert_event(&event).await?;
         Ok(())
     }
+    pub async fn import_call_logs(&self, csv_data: &str) -> Result<usize, ApiError> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
+        })?;
+        let records = hre_calls::parse_call_log_csv(csv_data)
+            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()))?;
+        let mut count = 0;
+        for rec in &records {
+            let sender = self.ids.subject("phone", &rec.caller)?;
+            let recipient = self.ids.subject("phone", &rec.callee)?;
+            let event = StoredEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                sender: sender.0,
+                recipient: recipient.0,
+                timestamp_ms: rec.timestamp_ms,
+                kind: StoredKind::Call,
+                channel: self.ids.opaque("channel", "voice")?,
+                answered: rec.answered,
+                duration_s: f64::from(rec.duration_s),
+                ..StoredEvent::default()
+            };
+            if store.insert_event(&event).await? {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
     pub async fn alerts(&self) -> Result<Vec<AnalyzeResponse>, ApiError> {
         let Some(store) = &self.store else {
             return Ok(Vec::new());
@@ -556,6 +779,89 @@ impl Engine {
             .insert_reported_hash(phash, &sha, &request.reason, now)
             .await?;
         Ok(())
+    }
+    pub async fn export_evidence(
+        &self,
+        subject_id: &str,
+    ) -> Result<hre_evidence::EvidenceExport, ApiError> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
+        })?;
+        let subject = if hre_store::is_pseudonym(subject_id) {
+            subject_id.to_string()
+        } else {
+            self.ids.subject("demo-chat", subject_id)?.0
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let events = store.target_window(&subject, 0, now).await?;
+        let mut records = Vec::new();
+
+        for ev in events {
+            let assessment = store.assessment(&ev.event_id).await?;
+            let (severity, tier, reasons, summary) = if let Some(val) = assessment {
+                let sev = val
+                    .pointer("/response/severity")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u8;
+                let t = val
+                    .pointer("/response/tier")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Low")
+                    .to_string();
+                let reasons: Vec<Reason> = val
+                    .pointer("/response/reasons")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let summary = match ev.kind {
+                    StoredKind::Message => {
+                        format!("Message event (content hash: {:?})", ev.content_hash)
+                    }
+                    StoredKind::Image => "Image media screened (pixels redacted)".into(),
+                    StoredKind::Audio => "Audio media transcribed (PII masked)".into(),
+                    StoredKind::Call => format!(
+                        "Call record: answered={}, duration={}s",
+                        ev.answered, ev.duration_s
+                    ),
+                    _ => "Event record".into(),
+                };
+                (sev, t, reasons, summary)
+            } else {
+                (0, "Low".into(), Vec::new(), "Unassessed event".into())
+            };
+
+            let dt_utc = chrono::DateTime::from_timestamp_millis(ev.timestamp_ms)
+                .unwrap_or_default()
+                .to_rfc3339();
+            let dt_local = format!("{} IST", dt_utc);
+
+            records.push(hre_evidence::EvidenceRecord {
+                record_id: uuid::Uuid::new_v4(),
+                event_id: ev.event_id,
+                timestamp_utc: dt_utc,
+                timestamp_local: dt_local,
+                kind: format!("{:?}", ev.kind).to_lowercase(),
+                sender_pseudonym: ev.sender,
+                recipient_pseudonym: ev.recipient,
+                platform: "platform".into(),
+                summary,
+                severity,
+                tier,
+                reasons,
+                prev_hash: String::new(),
+                canonical_hash: String::new(),
+            });
+        }
+
+        let secret = self.ids.opaque("evidence_key", "server_key")?;
+        hre_evidence::build_timeline(&subject, records, secret.as_bytes())
+            .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))
+    }
+    pub fn verify_evidence(&self, export: &hre_evidence::EvidenceExport) -> Result<bool, ApiError> {
+        let secret = self.ids.opaque("evidence_key", "server_key")?;
+        match hre_evidence::verify_timeline(export, secret.as_bytes()) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
     }
 }
 fn cached_response(

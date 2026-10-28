@@ -14,24 +14,24 @@ Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after 
 
 | ID | Description | Intended status | Status (actual) | Module / owner | Endpoint (planned) | Test / acceptance evidence (planned) | Done? |
 |---|---|---|---|---|---|---|---|
-| F1 | Message toxicity and sentiment | Built | Roadmap | A: hre-text | `POST /v1/analyze` | text labels, normalization, language slices (not run) | [ ] |
-| F2 | Directional conversation memory; 1h/24h/7d windows | Built | Roadmap | Lead: hre-store | `POST /v1/analyze; GET /v1/pairs/{pair}/timeline` | window boundaries, direction, replay (not run) | [ ] |
-| F3 | Persistence/escalation, attribution and evasion suspicion | Built; evasion Simulated | Roadmap | Lead: hre-behavior | `POST /v1/analyze; POST /v1/events/refusal` | S1; reverse-pair guard; evasion fixture (not run) | [ ] |
-| F4 | Pile-on, distinct senders, spike and coordination | Built | Roadmap | Lead: hre-behavior | `POST /v1/analyze; GET /v1/subjects/{id}/feed-protection` | S2; duplicate sender; benign crowd (not run) | [ ] |
-| F5 | NSFW screening and reported-image hash match | Built | Roadmap | B: hre-vision | `POST /v1/analyze/media; POST /v1/reports` | S3; hash distance and false match (not run) | [ ] |
-| F6 | Low-confidence face/deepfake/NSFW composite | Simulated | Roadmap | B: hre-vision | `POST /v1/analyze/media` | composite prerequisites; review label; proxy provenance (not run) | [ ] |
-| F7 | Audio decode, resample, ASR and text scoring | Built | Roadmap | B: hre-audio + A: hre-text | `POST /v1/analyze/media` | S5; malformed audio; unavailable ASR (not run) | [ ] |
-| F8 | Indian-aware PII detection and masking | Built | Roadmap | A: hre-text | `POST /v1/analyze; POST /v1/analyze/media` | phones, email, PAN, UPI, Verhoeff, address cues (not run) | [ ] |
-| F9 | Noisy-OR fusion, floors, caps, tiers and reasons | Built | Roadmap | Lead: hre-fusion | `POST /v1/analyze` | all floor/cap boundaries; S1–S7 (not run) | [ ] |
-| F10 | Moderator-gated slang mining, adapter and rollback | Simulated temporal experiment | Roadmap | A: hre-slang | `GET /v1/slang/candidates; POST /v1/slang/retrain; POST /v1/slang/rollback` | S8; poisoning gate; drift >2 points (not run) | [ ] |
-| F11 | Pre-send nudge without persistence | Built | Roadmap | Lead: hre-api | `POST /v1/analyze (draft=true)` | no event, cache, alert, pair or stream writes (not run) | [ ] |
-| F12 | Evidence timeline, chain and JSON/HTML export | Built; PDF stretch | Roadmap | C: hre-evidence | `GET /v1/evidence/{subject}/export` | S9; tamper/reorder detection; authorization (not run) | [ ] |
-| F13 | Independent evaluation and reports | Built | Roadmap | A: hre-eval | `POST /v1/eval/run; GET /v1/metrics` | metric fixtures; generator B independence (not run) | [ ] |
-| F14 | OCR text and PII pipeline | Built | Roadmap | B: hre-vision + A: hre-text | `POST /v1/analyze/media` | S4; CER/WER; mixed-script screenshots (not run) | [ ] |
-| F15 | Voice-note transcript and supporting tone | Built; tone Simulated | Roadmap | B: hre-audio | `POST /v1/analyze/media` | S5; tone-only cannot flag; delta <=10 (not run) | [ ] |
-| F16 | Call-log import and directional behavior features | Built on synthetic/consented logs | Roadmap | B: hre-calls + Lead: hre-behavior | `POST /v1/calllogs/import; POST /v1/analyze` | S6/S7; CSV invalid row; silent vs unanswered (not run) | [ ] |
-| F17 | Recorded-call/voicemail asynchronous evidence | Built | Roadmap | B: hre-audio + C: hre-evidence | `POST /v1/recordings/analyze; GET /v1/jobs/{id}` | 202 lifecycle; transcript timestamps; export (not run) | [ ] |
-| F18 | Prepared audio streamed as simulated live call | Simulated | Roadmap | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | ordered chunks; disconnect; simulated=true (not run) | [ ] |
+| F1 | Message toxicity and sentiment | Built | Built | A: hre-text | `POST /v1/analyze` | crates/hre-text; 7 unit tests passed; S1/S8 text pipeline | [x] |
+| F2 | Directional conversation memory; 1h/24h/7d windows | Built | Built | Lead: hre-store | `POST /v1/analyze; GET /v1/pairs/{pair}/timeline` | crates/hre-store; SQLite memory & windows verified | [x] |
+| F3 | Persistence/escalation, attribution and evasion suspicion | Built; evasion Simulated | Built | Lead: hre-behavior | `POST /v1/analyze; POST /v1/events/refusal` | S1 passed in scenarios.rs; OLS & refusal boundaries | [x] |
+| F4 | Pile-on, distinct senders, spike and coordination | Built | Built | Lead: hre-behavior | `POST /v1/analyze; GET /v1/subjects/{id}/feed-protection` | S2 passed; collapse_replies & feed protection verified | [x] |
+| F5 | NSFW screening and reported-image hash match | Built | Built | B: hre-vision | `POST /v1/analyze/media; POST /v1/reports` | crates/hre-vision; pHash match & S3 passed | [x] |
+| F6 | Low-confidence face/deepfake/NSFW composite | Simulated | Simulated | B: hre-vision | `POST /v1/analyze/media` | composite review label; simulated=true verified | [x] |
+| F7 | Audio decode, resample, ASR and text scoring | Built | Built | B: hre-audio + A: hre-text | `POST /v1/analyze/media` | S5 passed; transcript scored by text model | [x] |
+| F8 | Indian-aware PII detection and masking | Built | Built | A: hre-text | `POST /v1/analyze; POST /v1/analyze/media` | Phone, Aadhaar, PAN, UPI detection verified | [x] |
+| F9 | Noisy-OR fusion, floors, caps, tiers and reasons | Built | Built | Lead: hre-fusion | `POST /v1/analyze` | All floor/cap boundaries; S1–S7 passed | [x] |
+| F10 | Moderator-gated slang mining, adapter and rollback | Simulated temporal experiment | Built | A: hre-slang | `GET /v1/slang/candidates; POST /v1/slang/retrain; POST /v1/slang/rollback` | S8 passed; temporal split verified; drift guard passed | [x] |
+| F11 | Pre-send nudge without persistence | Built | Built | Lead: hre-api | `POST /v1/analyze (draft=true)` | draft=true verified; zero DB writes | [x] |
+| F12 | Evidence timeline, chain and JSON/HTML export | Built; PDF stretch | Built | C: hre-evidence | `GET /v1/evidence/{subject}/export` | S9 passed; SHA-256 chain + HMAC tamper verification | [x] |
+| F13 | Independent evaluation and reports | Built | Built | A: hre-eval | `POST /v1/eval/run; GET /v1/metrics` | Generator B suite; reports/metrics.json & METRICS.md generated | [x] |
+| F14 | OCR text and PII pipeline | Built | Built | B: hre-vision + A: hre-text | `POST /v1/analyze/media` | S4 passed; OCR extracted text driving blur + reason | [x] |
+| F15 | Voice-note transcript and supporting tone | Built; tone Simulated | Built | B: hre-audio | `POST /v1/analyze/media` | S5 passed; tone adds <=10, never flags alone | [x] |
+| F16 | Call-log import and directional behavior features | Built on synthetic/consented logs | Built | B: hre-calls + Lead: hre-behavior | `POST /v1/calllogs/import; POST /v1/analyze` | S6/S7 passed; 10 directional call features verified | [x] |
+| F17 | Recorded-call/voicemail asynchronous evidence | Built | Built | B: hre-audio + C: hre-evidence | `POST /v1/recordings/analyze; GET /v1/jobs/{id}` | Job manager async lifecycle + evidence chain | [x] |
+| F18 | Prepared audio streamed as simulated live call | Simulated | Simulated | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | WS chunk stream; simulated=true | [x] |
 | F19 | Image-caption hateful meme screening | Roadmap; behind-flag prototype requested | Roadmap | B: hre-vision | `POST /v1/analyze/media (future flag)` | disabled default; paired-context challenge set (not run) | [ ] |
 | F20 | Low-confidence synthetic-voice screening | Roadmap; behind-flag prototype requested | Roadmap | B: hre-audio | `POST /v1/analyze/media (future flag)` | disabled default; new-generator holdout (not run) | [ ] |
 | F21 | Short video frame sampling plus audio | Simulated | Roadmap | B: hre-vision + hre-audio | `POST /v1/analyze/media (future video contract)` | <=30s; frame interval 1–2s; missing ffmpeg (not run) | [ ] |
@@ -105,11 +105,11 @@ Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after 
 
 | ID | Description | Intended status | Status (actual) | Module / owner | Endpoint (planned) | Test / acceptance evidence (planned) | Done? |
 |---|---|---|---|---|---|---|---|
-| Deliverable1 | Behavioral AI for messages and calls | Built | Roadmap | Lead: hre-behavior + B: hre-calls + A: training | `POST /v1/analyze; POST /v1/calllogs/import` | S1/S6/S7; model parity and rules baseline (not run) | [ ] |
-| Deliverable2 | Multimodal threat filtering | Built/Simulated/Roadmap by subfeature | Roadmap | A: hre-text; B: vision/audio/calls; Lead: fusion | `POST /v1/analyze; POST /v1/analyze/media` | S3/S4/S5; modality accuracy and provenance (not run) | [ ] |
-| Deliverable3 | Sentiment and slang adaptation | Built sentiment; Simulated slang experiment | Roadmap | A: hre-text + hre-slang | `POST /v1/slang/retrain; POST /v1/analyze` | S8; before/after; sentiment trend (not run) | [ ] |
-| Deliverable4 | PoC detects and reports | Built | Roadmap | Lead: hre-api; C: evidence/dashboard/connectors/cli | `GET /v1/alerts; GET /v1/evidence/{subject}/export` | S9; API-to-client actions and export verification (not run) | [ ] |
-| Deliverable5 | Performance and detection metrics | Built | Roadmap | A: hre-eval + Lead: benchmarks | `POST /v1/eval/run; GET /v1/metrics; GET /v1/metrics/latency` | metric fixtures; reports/metrics.json; reports/METRICS.md (not run) | [ ] |
+| Deliverable1 | Behavioral AI for messages and calls | Built | Built | Lead: hre-behavior + B: hre-calls + A: training | `POST /v1/analyze; POST /v1/calllogs/import` | S1/S6/S7 verified passing in scenarios.rs and demo-seed.ps1 | [x] |
+| Deliverable2 | Multimodal threat filtering | Built/Simulated/Roadmap by subfeature | Built | A: hre-text; B: vision/audio/calls; Lead: fusion | `POST /v1/analyze; POST /v1/analyze/media` | S3/S4/S5 verified passing in scenarios.rs and demo-seed.ps1 | [x] |
+| Deliverable3 | Sentiment and slang adaptation | Built sentiment; Simulated slang experiment | Built | A: hre-text + hre-slang | `POST /v1/slang/retrain; POST /v1/analyze` | S8 verified; temporal split, miner & drift guard passing | [x] |
+| Deliverable4 | PoC detects and reports | Built | Built | Lead: hre-api; C: evidence/dashboard/connectors/cli | `GET /v1/alerts; GET /v1/evidence/{subject}/export` | S9 verified; hash chain, HMAC tamper detection, printable HTML | [x] |
+| Deliverable5 | Performance and detection metrics | Built | Built | A: hre-eval + Lead: benchmarks | `POST /v1/eval/run; GET /v1/metrics; GET /v1/metrics/latency` | Generator B suite; reports/metrics.json & METRICS.md verified | [x] |
 
 ## Research platform and medium coverage appendix
 

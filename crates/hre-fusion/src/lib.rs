@@ -91,7 +91,7 @@ impl Default for FusionConfig {
                 ("text".into(), 0.8),
                 ("ocr".into(), 0.8),
                 ("image".into(), 0.85),
-                ("audio".into(), 0.0),
+                ("audio".into(), 0.85),
                 ("call".into(), 0.8),
                 ("behavior".into(), 0.85),
                 ("pile_on".into(), 0.85),

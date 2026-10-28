@@ -1,0 +1,39 @@
+[package]
+name = "hre-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hre-eval"
+path = "src/main.rs"
+
+[dependencies]
+hre-core = { path = "../hre-core" }
+hre-text = { path = "../hre-text" }
+hre-vision = { path = "../hre-vision" }
+hre-calls = { path = "../hre-calls" }
+hre-audio = { path = "../hre-audio" }
+hre-slang = { path = "../hre-slang" }
+hre-evidence = { path = "../hre-evidence" }
+hre-store = { path = "../hre-store" }
+hre-behavior = { path = "../hre-behavior" }
+hre-fusion = { path = "../hre-fusion" }
+hre-api = { path = "../hre-api" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+axum = { workspace = true }
+
