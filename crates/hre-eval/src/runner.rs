@@ -119,6 +119,11 @@ impl EvalRunner {
                 case_latencies.push(latency_ms);
 
                 if http_resp.status() != StatusCode::OK {
+                    if http_resp.status() == StatusCode::NOT_IMPLEMENTED
+                        && matches!(req.kind, hre_core::EventKind::Audio)
+                    {
+                        anyhow::bail!("eval audio analysis unavailable (HTTP 501); no new full report was written; use --independent for engine-only results");
+                    }
                     anyhow::bail!("eval request failed with status: {}", http_resp.status());
                 }
 

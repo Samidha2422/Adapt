@@ -1,5 +1,117 @@
 # Cross-owner requests
 
+### API text/vision patch ready for Luna (unverified)
+
+API changes are in `crates/hre-api/{src/engine.rs,src/lib.rs,tests/scenarios.rs,tests/media.rs,README.md}`. Actual-byte multipart `/v1/analyze/image` uses fields `request` and `image`; JSON captions only reach text analysis. Removed all production image fixture construction and caption-driven score overrides. Configured asset overrides load only in demo_mode. Text/image/OCR run in spawn_blocking. OCR metadata is explicitly simulated; no media bodies enter API output or persistence; simulation and unsolicited-media provenance reach stored history. Reports reject missing/non-upload events and blank/oversized reasons; SHA-256 comes from upload bytes, not UUID or caption. Approximate matching is disabled pending decoded-pixel hashing; the interim lookup uses a SHA-derived key plus full SHA equality and needs the requested exact store query. Eight new tests cover multipart, privacy, drafts, reports, byte-bound retries, MIME/size/auth, text/PII and OpenAPI; two old caption-fixture scenario tests now assert honest caption-only behavior. Parent/Luna: run logged `format`, `check`, `openapi`, then send only the prescribed summary. This API session ran source inspection and quiet `git diff --check`, not builds/tests or raw log reading; no commit/staging performed. C1/C2/C8/dashboard untouched.
+
+### API call CSV persistence policy (supersedes batch-boundary request)
+
+User explicitly authorized whole-file CSV validation followed by independent per-event engine analysis/persistence, with per-row outcomes and documented partial commits. No batch transaction is required or requested. Delivered `/v1/calllogs/import` accepts JSON platform/conversation_id/csv/draft, validates through hre-calls in spawn_blocking before writes, then returns imported/cached/draft/failed per row. Failed rows do not roll back successful rows or stop later rows. Parser HMAC scope is preserved without double hashing; source simulation enters persisted events and existing behavior/fusion. Six focused tests in `crates/hre-api/tests/call_import.rs` cover malformed-last-row no effects, privacy/simulation/HMAC scope, retries, partial conflicts/continuation, drafts, duplicate/header validation and OpenAPI. Dependency `hre-calls` is present in `crates/hre-api/Cargo.toml`; engine.rs has no doctest snippets to suppress. The reported unresolved hre_calls errors require rerunning against the completed dependency graph. Audio uploads are explicitly rejected; hre-audio is a decoder boundary, not integrated ASR. API patch is ready for parent/Luna logged format/check/openapi; this session ran no noisy checks or raw log reads.
+
+### B4 immediate API handoff to Dirac / Lead / Luna (2026-10-28, verification pending)
+
+Workspace membership was added by the parent. Both library source files are now
+present. B3 actual source is `crates/hre-audio/src/lib.rs`; no new external deps.
+
+```rust
+pub fn decode_wav(input: &[u8], mime: &str) -> Result<DecodedAudio, AudioError>;
+impl DecodedAudio {
+    pub fn samples(&self) -> &[f32];
+    pub fn metadata(&self) -> AudioMetadata;
+}
+pub fn unavailable_asr(audio: &DecodedAudio, simulated: bool) -> AudioReport;
+pub fn analyze_wav(input: &[u8], mime: &str, simulated: bool)
+    -> Result<AudioReport, AudioError>;
+```
+
+AudioReport has public Serialize fields metadata, decode_status, status, backend,
+transcript, score, simulated, degraded. ASR status=Roadmap/backend=Disabled;
+transcript=None/score=None always, degraded includes audio.asr_unavailable and
+audio.tone_unavailable. Successful decode alone is Built (Simulated for synthetic
+input). Decode errors remain errors. No ASR, tone inference, language prediction,
+resampling, model artifacts, subprocesses, files, jobs, streaming or evidence
+storage. No text hook is called without actual ASR output.
+
+Accepted audio: RIFF/WAVE little-endian PCM16 mono/stereo, native sample rates
+8000,16000,22050,24000,32000,44100,48000. Stereo averaged to normalized mono.
+Strict MIME allowlist audio/wav,audio/x-wav,audio/wave (case insensitive, no
+parameters), independent magic/container/size/alignment checks. Encoded cap
+25 MiB, duration cap 300 seconds, max 1,024 chunks; both caps apply (high-rate
+stereo may hit the byte cap before 300s). Decoded mono storage is at most 50 MiB,
+plus caller-owned encoded input and allocation overhead. Unknown chunks validated and
+discarded. No RF64/RIFX/float/compressed/extensible WAV, duplicate fmt/data,
+partial/empty frames, truncation, missing padding, or trailing bytes. DecodedAudio
+does not Serialize and Debug prints metadata only. Caller owns/drop-cleans input
+and decoded samples; this is not guaranteed memory zeroization. Native-rate PCM
+must not be passed to a future 16kHz ASR backend without verified resampling.
+
+Actual source: `crates/hre-calls/src/lib.rs`; crate manifest is present. Add
+`hre-calls = { path = "../hre-calls" }` to the API's dependencies. Parent owns
+workspace membership/lock refresh; B leaves shared root files untouched to avoid
+concurrent edits. Public signatures now available:
+
+```rust
+pub fn import_csv(input: &[u8], pseudonymizer: &hre_core::Pseudonymizer,
+    platform: &str) -> Result<Vec<CallRecord>, CallError>;
+pub fn extract_features(records: &[CallRecord], caller: &hre_core::SubjectId,
+    callee: &hre_core::SubjectId, as_of: chrono::DateTime<chrono::Utc>,
+    recipient_offset: chrono::FixedOffset) -> Result<CallFeatures, CallError>;
+impl CallFeatures { pub fn model_vector(&self) -> [f64; 8]; }
+```
+
+CSV requires exactly these nine columns (any order):
+`event_id,occurred_at,caller_id,callee_id,duration_s,answered,voicemail,after_refusal,simulated`.
+Caller/callee are actual calling/receiving parties, never device-relative incoming/
+outgoing labels. UUIDs must be non-nil and unique within each import. RFC3339 times
+in 1970..=2100; booleans exactly true/false; unsigned decimal duration <=86,400s.
+IDs/platform are trimmed, nonempty, <=256 UTF-8 bytes, no control characters.
+IDs are immediately HMACed using the supplied core Pseudonymizer/platform; outputs
+and errors retain no raw CSV/identities. Import is all-or-error and performs no I/O.
+Supports BOM, LF/CRLF, quoted commas and doubled quotes, but rejects multiline
+fields, blank rows, unknown/duplicate headers. Caps: 2 MiB, 10,000 calls, 4,096
+bytes/physical line, 256 decoded bytes/field. Header-only import returns no calls.
+
+Use spawn_blocking around import/extraction. Set upload/body limits before buffering.
+For Kolkata pass `FixedOffset::east_opt(19_800)`; supply the recipient's offset for
+other locations. Windows are inclusive 1h/24h/7d, ending at explicit as_of; future
+calls excluded. `CallFeatures::{one_hour,one_day,seven_days,max_calls_1h,
+gap_regularity,distinct_callers_24h,recipient_reply_ratio_24h,new_number_flag,
+simulated,status}` are public and Serialize. `CallWindow` exposes call_count,
+unanswered_calls, short_answered_calls (<5s answered; never acoustic silence),
+night_calls (22..05), after_refusal_calls, voicemail_count, answered_duration_s,
+avg_duration_s, unanswered_ratio, night_call_ratio. `new_number_flag` is always
+None: no identity linking. Refusal flags are source-supplied, not independently
+verified. Model vector follows the eight proposed MODEL_CONTRACT names, raw f64;
+no model inference, risk score, thresholds or trained missing-history policy.
+Distinct callers requires complete target history; reverse ratio is reverse /
+(forward+reverse), zero when empty. Any contributing synthetic record makes the
+feature status Simulated and simulated=true. Do not infer known safety from absent
+history. API must propagate simulation from imports to persisted assessments.
+
+API integration remains Lead-owned: auth, history merge, refusal-source validation,
+cross-import idempotency, caller authorization, drafts (no writes/alerts), storage,
+fusion, recordings/jobs and route wiring. Parsing alone does not activate these.
+Luna: both lib.rs and tests.rs files are present, ready for logged format/check.
+No builds/tests/downloads were run in the B session (no Luna delegation tool).
+Parent owns verification, Cargo.lock refresh and commits. Exact existing recipes:
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/just.ps1 format`, then
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/just.ps1 check`.
+Luna must inspect their target/logs/<recipe>.exit/log and summarize <=15 lines.
+Call tests cover strict CSV quoting/encoding/header/row validation, atomic errors,
+HMAC privacy/platform scoping, 10,000-record boundary, duplicate IDs, invalid public
+records, golden vector, inclusive/future windows, night-hour boundaries and
+simulation across contributing directions/target history. Audio tests cover PCM
+normalization/stereo/native rates, all documented unavailable outcomes, malformed
+chunks/format/length/padding, byte/duration/chunk caps and arbitrary-byte plus PCM
+roundtrip properties. These tests are written, not yet verified by this session.
+
+### API integration coordination (2026-10-28)
+
+- Sartre (`01a1827d-a5b4-7400-9edb-f0d039283ada`): please publish delivered `hre-calls` CSV parser signatures and readiness here. API owner will integrate `/v1/calllogs/import` once the crate and workspace dependency exist. No ASR or fabricated transcript scoring will be added.
+- Vision owner: `compute_phash` samples encoded bytes, not decoded pixels; API disables approximate matching. Metadata extraction is not OCR inference; API labels contributing metadata extraction simulated. Please provide decoded-pixel hashing and honest OCR status upstream.
+- Store owner: please add `Store::find_reported_sha256(&str) -> Result<Option<ReportedHashMatch>, StoreError>` for exact matching. Until delivered API checks full SHA after a zero-distance lookup and never matches on the approximate hash alone.
+- Parent/Luna: API owner has no agent delegation tool. Please run logged format/check after API handoff, inspect logs, and return at most 15 summary lines. No build/test logs are read in this session.
+
 Snapshot: 2026-10-28. These requests are pending work records for the parent/human teams; no external message or implementation is implied.
 
 | ID | To | Concrete request | Needed for | State |

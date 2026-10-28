@@ -1,9 +1,10 @@
 //! HTTP boundary: authentication, validation, draft isolation and generated OpenAPI.
+mod calls;
 mod engine;
 pub mod mock;
 
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Request, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Multipart, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{
@@ -63,9 +64,20 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/v1/health", get(health))
         .route("/v1/health/models", get(health_models))
         .route("/v1/analyze", post(analyze))
+        .route(
+            "/v1/analyze/image",
+            post(analyze_image).layer(DefaultBodyLimit::max(hre_vision::MAX_IMAGE_SIZE + 65536)),
+        )
+        .route(
+            "/v1/analyze/media",
+            post(analyze_image).layer(DefaultBodyLimit::max(hre_vision::MAX_IMAGE_SIZE + 65536)),
+        )
         .route("/v1/events/refusal", post(refusal))
+        .route(
+            "/v1/calllogs/import",
+            post(import_calls).layer(DefaultBodyLimit::max(hre_calls::MAX_CSV_BYTES * 2 + 65536)),
+        )
         .route("/v1/reports", post(report))
-        .route("/v1/calllogs/import", post(import_call_logs))
         .route("/v1/recordings/analyze", post(submit_recording))
         .route("/v1/jobs/{id}", get(get_job))
         .route("/v1/slang/terms", post(add_slang_term))
@@ -198,6 +210,7 @@ async fn authorize(State(state): State<Shared>, request: Request, next: Next) ->
     if *count > 600 {
         return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
+    drop(rate);
     next.run(request).await
 }
 
@@ -248,7 +261,93 @@ async fn analyze(
     }
     Ok(Json(response))
 }
+/// Multipart fields: `request` is an AnalyzeRequest JSON envelope; `image` is the file.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct ImageUpload {
+    request: String,
+    #[schema(value_type = String, format = Binary)]
+    image: Vec<u8>,
+}
 
+#[utoipa::path(post, path = "/v1/analyze/image",
+    request_body(content = ImageUpload, content_type = "multipart/form-data"),
+    responses((status = 200, body = AnalyzeResponse), (status = 400, body = Problem),
+        (status = 401, body = Problem), (status = 409, body = Problem),
+        (status = 413, body = Problem), (status = 422, body = Problem)),
+    security(("api_key" = []), ("moderator" = [])))]
+async fn analyze_image(
+    State(state): State<Shared>,
+    multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
+) -> Result<Json<AnalyzeResponse>, ApiError> {
+    let mut multipart = multipart
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid multipart envelope"))?;
+    let mut envelope = None;
+    let mut image = None;
+    let mut file_mime = None;
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
+        match field.name() {
+            Some("request") if envelope.is_none() => {
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.len() > 65536 {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "image envelope exceeds limit",
+                    ));
+                }
+                envelope = Some(serde_json::from_slice::<AnalyzeRequest>(&bytes).map_err(
+                    |_| ApiError::new(StatusCode::BAD_REQUEST, "invalid image request JSON"),
+                )?);
+            }
+            Some("image") if image.is_none() => {
+                file_mime = field.content_type().map(str::to_owned);
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.is_empty() || bytes.len() > hre_vision::MAX_IMAGE_SIZE {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "image must contain 1..10485760 bytes",
+                    ));
+                }
+                image = Some(bytes.to_vec());
+            }
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "expected one request and one image field",
+                ))
+            }
+        }
+    }
+    let request =
+        envelope.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "request field required"))?;
+    request.validate()?;
+    if request.kind != EventKind::Image
+        || request.media.as_ref().map(|m| m.mime.as_str()) != file_mime.as_deref()
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "image kind and matching file MIME required",
+        ));
+    }
+    let bytes =
+        image.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "image field required"))?;
+    let (response, fresh) = if state.mock {
+        (mock::analyze(&request), false)
+    } else {
+        state.engine.analyze_image(&request, Some(bytes)).await?
+    };
+    if fresh && response.alert_id.is_some() {
+        let _ = state.alerts.send(response.clone());
+    }
+    Ok(Json(response))
+}
+
+fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
+    ApiError::new(
+        error.status(),
+        "invalid multipart upload or request exceeds body limit",
+    )
+}
 #[utoipa::path(post, path = "/v1/events/refusal", request_body = RefusalRequest, responses((status = 204), (status = 401, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
 async fn refusal(
     State(state): State<Shared>,
@@ -258,8 +357,7 @@ async fn refusal(
     state.engine.refusal(&request).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-
-#[utoipa::path(post, path = "/v1/reports", request_body = ReportRequest, responses((status = 204), (status = 401, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
+#[utoipa::path(post, path = "/v1/reports", request_body = ReportRequest, responses((status = 204), (status = 401, body = Problem), (status = 404, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
 async fn report(
     State(state): State<Shared>,
     input: Result<Json<ReportRequest>, JsonRejection>,
@@ -270,6 +368,7 @@ async fn report(
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CallLogImportRequest {
     pub csv_data: String,
 }
@@ -277,6 +376,25 @@ pub struct CallLogImportRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct CallLogImportResponse {
     pub imported: usize,
+}
+
+async fn import_calls(
+    State(state): State<Shared>,
+    input: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(value) = input.map_err(json_error)?;
+    if value.get("csv_data").is_some() {
+        let request: CallLogImportRequest = serde_json::from_value(value)
+            .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid call import request"))?;
+        let imported = state.engine.import_call_logs(request.csv_data).await?;
+        Ok(Json(CallLogImportResponse { imported }).into_response())
+    } else {
+        let request: calls::CallImportRequest = serde_json::from_value(value)
+            .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid call import request"))?;
+        Ok(calls::import_calls(State(state), Ok(Json(request)))
+            .await?
+            .into_response())
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -290,16 +408,6 @@ pub struct RecordingAnalyzeRequest {
 pub struct JobSubmissionResponse {
     pub job_id: uuid::Uuid,
     pub status: String,
-}
-
-#[utoipa::path(post, path = "/v1/calllogs/import", request_body = CallLogImportRequest, responses((status = 200, body = CallLogImportResponse), (status = 400, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
-async fn import_call_logs(
-    State(state): State<Shared>,
-    input: Result<Json<CallLogImportRequest>, JsonRejection>,
-) -> Result<Json<CallLogImportResponse>, ApiError> {
-    let Json(request) = input.map_err(json_error)?;
-    let imported = state.engine.import_call_logs(&request.csv_data).await?;
-    Ok(Json(CallLogImportResponse { imported }))
 }
 
 #[utoipa::path(post, path = "/v1/recordings/analyze", request_body = RecordingAnalyzeRequest, responses((status = 202, body = JobSubmissionResponse), (status = 400, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
@@ -617,9 +725,10 @@ impl Modify for Security {
         health,
         health_models,
         analyze,
+        analyze_image,
+        calls::import_calls,
         refusal,
         report,
-        import_call_logs,
         submit_recording,
         get_job,
         add_slang_term,

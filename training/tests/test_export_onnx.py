@@ -4,6 +4,8 @@ import os
 import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from hre_training.export_onnx import (
     MODEL_SPECS,
@@ -20,7 +22,7 @@ from hre_training.export_onnx import (
 
 class TestExportOnnx(unittest.TestCase):
     def test_metadata_label_order(self):
-        """Asserts label ordering in model specs matches upstream publisher configurations."""
+        """Freezes proposed native label ordering; upstream verification is still absent."""
         # 1. unitary/unbiased-toxic-roberta must have the canonical 7 Detoxify labels in exact order
         roberta_spec = get_model_spec("unitary/unbiased-toxic-roberta")
         expected_labels = [
@@ -63,7 +65,7 @@ class TestExportOnnx(unittest.TestCase):
     def test_missing_model_skip_is_explicit(self):
         """Tests that attempting export without local weights produces an explicit MissingArtifactError."""
         # When local weights path does not exist, export raises an explicit MissingArtifactError
-        with self.assertRaises(MissingArtifactError) as ctx:
+        with patch("hre_training.export_onnx.verify_license", return_value=True), self.assertRaises(MissingArtifactError) as ctx:
             export_model_to_onnx(
                 "unitary/unbiased-toxic-roberta",
                 output_dir="models",
@@ -82,6 +84,45 @@ class TestExportOnnx(unittest.TestCase):
                 "cardiffnlp/twitter-xlm-roberta-base-sentiment",
                 output_dir="models",
             )
+
+    def test_every_candidate_requires_license_evidence(self):
+        for model_id in MODEL_SPECS:
+            with self.subTest(model_id=model_id), self.assertRaises(LicenseNotClearedError):
+                verify_license(model_id)
+        with patch.dict(MODEL_SPECS["unitary/unbiased-toxic-roberta"], {"license_cleared": True}):
+            with self.assertRaises(LicenseNotClearedError):
+                verify_license("unitary/unbiased-toxic-roberta")
+
+    def test_existing_weights_do_not_claim_export(self):
+        with TemporaryDirectory() as directory:
+            weights = Path(directory) / "weights.bin"
+            weights.write_bytes(b"not a model")
+            with patch("hre_training.export_onnx.verify_license", return_value=True):
+                with self.assertRaises(NotImplementedError):
+                    export_model_to_onnx("unitary/unbiased-toxic-roberta", directory, weights)
+            self.assertEqual(list(Path(directory).glob("*.onnx")), [])
+
+    def test_invalid_parity_inputs_are_rejected(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaises(ParityError):
+                compare_numerical_parity([value], [0.0])
+            with self.assertRaises(ParityError):
+                compare_numerical_parity([0.0], [value])
+            with self.assertRaises(ParityError):
+                compare_numerical_parity([0.0], [0.0], tolerance=value)
+        with self.assertRaises(ParityError):
+            compare_numerical_parity([], [])
+        with self.assertRaises(ParityError):
+            compare_numerical_parity([0.0], [0.0], tolerance=-1)
+
+    def test_native_specs_are_not_deployment_contracts(self):
+        spec = get_model_spec("unitary/unbiased-toxic-roberta")
+        self.assertEqual((spec["task"], spec["output_names"], spec["max_seq_len"]),
+                         ("toxicity_multilabel", ["logits"], 512))
+        self.assertFalse(check_dynamic_batch_shapes({}))
+        spec["dynamic_axes"].pop("logits")
+        self.assertFalse(check_dynamic_batch_shapes(spec))
+        self.assertIn("logits", get_model_spec("unitary/unbiased-toxic-roberta")["dynamic_axes"])
 
     def test_numerical_parity_tolerance(self):
         """Verifies parity comparison logic and 1e-4 numerical tolerance bound."""
@@ -111,8 +152,7 @@ class TestExportOnnx(unittest.TestCase):
                 "Model artifact 'models/unbiased-toxic-roberta.onnx' not present locally. "
                 "Offline skip is explicit per Card A2 instructions."
             )
-        # If weights are present, parity testing would execute here
-        self.assertTrue(weights_file.exists())
+        raise unittest.SkipTest("Runtime/reference parity harness is not implemented; artifact existence is not parity.")
 
     def test_no_model_artifacts_committed(self):
         """Asserts that no binary model weights are tracked in git repository."""
@@ -122,6 +162,7 @@ class TestExportOnnx(unittest.TestCase):
             cwd=root_dir,
             capture_output=True,
             text=True,
+            check=True,
         )
         tracked_files = [line.strip() for line in res.stdout.splitlines() if line.strip()]
         self.assertEqual(

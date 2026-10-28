@@ -21,8 +21,8 @@ pub trait OcrBackend: Send + Sync {
 
 /// Fallback and synthetic OCR extractor.
 ///
-/// In the absence of an external OCR runtime, extracts text from standard
-/// container metadata (PNG tEXt/iTXt chunks, JPEG COM markers) or registered synthetic fixtures.
+/// Extracts supplied container metadata (PNG tEXt/iTXt, JPEG COM) or fixtures.
+/// It does not recognize pixels; contributing results are always simulated.
 #[derive(Debug, Clone, Default)]
 pub struct HeuristicOcrBackend {
     fixture_texts: BTreeMap<String, String>,
@@ -69,9 +69,9 @@ impl HeuristicOcrBackend {
                 text_report: None,
                 signal: Signal {
                     score: 0.0,
-                    label: "ocr_none".into(),
-                    status: Status::Built,
-                    backend: Backend::Heuristic,
+                    label: "ocr_unavailable".into(),
+                    status: Status::Roadmap,
+                    backend: Backend::Disabled,
                     confidence: 0.0,
                     details,
                 },
@@ -82,10 +82,17 @@ impl HeuristicOcrBackend {
         }
 
         // Mask PII before passing downstream or displaying to moderators
-        let (masked_text, _) = hre_text::mask_pii(&raw_text);
-
-        // Forward to hre-text for toxicity, threat, cue analysis
-        let text_report = hre_text::analyze(&raw_text).ok();
+        let mut report =
+            hre_text::analyze(&raw_text).map_err(|err| VisionError::Ocr(err.to_string()))?;
+        let masked_text = report.masked_text.clone();
+        // Fixture and container metadata are supplied text, never pixel recognition.
+        for signal in [&mut report.primary_signal, &mut report.pii_signal] {
+            signal.status = Status::Simulated;
+            signal
+                .details
+                .insert("simulated".into(), serde_json::json!(true));
+        }
+        let text_report = Some(report);
 
         let mut score = 0.0;
         let mut reasons = Vec::new();
@@ -106,22 +113,31 @@ impl HeuristicOcrBackend {
             serde_json::json!(masked_text.clone()),
         );
         details.insert("reasons_count".into(), serde_json::json!(reasons.len()));
+        details.insert("simulated".into(), serde_json::json!(true));
+        details.insert(
+            "source".into(),
+            serde_json::json!("fixture_or_container_metadata"),
+        );
 
         Ok(OcrReport {
-            raw_text,
+            // Preserve the DTO field without returning unmasked identifiers.
+            raw_text: masked_text.clone(),
             masked_text,
             text_report,
             signal: Signal {
                 score,
-                label: "ocr_text".into(),
-                status: Status::Built,
+                label: "simulated_ocr_text".into(),
+                status: Status::Simulated,
                 backend: Backend::Heuristic,
-                confidence: 0.85,
+                confidence: 0.0,
                 details,
             },
             recommended_action,
-            simulated: false,
-            degraded: vec!["ocr.onnx_missing".into(), "ocr.heuristic_fallback".into()],
+            simulated: true,
+            degraded: vec![
+                "ocr.onnx_missing".into(),
+                "ocr.metadata_or_fixture_simulated".into(),
+            ],
         })
     }
 }
@@ -156,8 +172,8 @@ fn extract_png_text(bytes: &[u8]) -> Option<String> {
                 as usize;
         let chunk_type = &bytes[pos + 4..pos + 8];
         let data_start = pos + 8;
-        let data_end = data_start + chunk_len;
-        if data_end + 4 > bytes.len() {
+        let data_end = data_start.checked_add(chunk_len)?;
+        if data_end.checked_add(4)? > bytes.len() {
             break;
         }
 
@@ -172,10 +188,15 @@ fn extract_png_text(bytes: &[u8]) -> Option<String> {
             }
         } else if chunk_type == b"iTXt" {
             let data = &bytes[data_start..data_end];
-            // keyword \0 comp_flag \0 comp_method \0 lang \0 trans \0 text
-            let parts: Vec<&[u8]> = data.splitn(5, |&b| b == 0).collect();
-            if parts.len() >= 5 {
-                if let Ok(text) = std::str::from_utf8(parts[4]) {
+            // keyword NUL, compression flag/method, language NUL, translation NUL, text.
+            if let Some(keyword_end) = data.iter().position(|&b| b == 0) {
+                let rest = data.get(keyword_end + 1..)?;
+                if !rest.starts_with(&[0, 0]) {
+                    pos = data_end + 4;
+                    continue; // Compressed or unsupported metadata is not plain text.
+                }
+                let fields: Vec<&[u8]> = rest[2..].splitn(3, |&b| b == 0).collect();
+                if let Some(Ok(text)) = fields.get(2).map(|text| std::str::from_utf8(text)) {
                     if !text.trim().is_empty() {
                         return Some(text.trim().to_string());
                     }
@@ -242,27 +263,24 @@ pub fn compute_cer(reference: &str, hypothesis: &str) -> f64 {
 
     let n = ref_chars.len();
     let m = hyp_chars.len();
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-
-    for (i, row) in dp.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, item) in dp[0].iter_mut().enumerate() {
-        *item = j;
-    }
+    // Keep two rows: quadratic memory can exhaust the process on long OCR text.
+    let mut previous: Vec<usize> = (0..=m).collect();
+    let mut current = vec![0usize; m + 1];
 
     for i in 1..=n {
+        current[0] = i;
         for j in 1..=m {
             let cost = if ref_chars[i - 1] == hyp_chars[j - 1] {
                 0
             } else {
                 1
             };
-            dp[i][j] = (dp[i - 1][j] + 1)
-                .min(dp[i][j - 1] + 1)
-                .min(dp[i - 1][j - 1] + cost);
+            current[j] = (previous[j] + 1)
+                .min(current[j - 1] + 1)
+                .min(previous[j - 1] + cost);
         }
+        std::mem::swap(&mut previous, &mut current);
     }
 
-    dp[n][m] as f64 / n as f64
+    previous[m] as f64 / n as f64
 }

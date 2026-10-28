@@ -149,3 +149,5 @@ mod tests {
         assert_eq!(updated.status, JobStatus::Failed);
     }
 }
+
+pub mod safe_decode;

@@ -21,10 +21,10 @@ pub fn compute_dhash_from_grid(grid: &[[u8; 9]; 8]) -> u64 {
     hash
 }
 
-/// Derives a deterministic 64-bit perceptual hash (dHash) from validated image bytes.
+/// Derives a deterministic encoded-byte proxy, NOT a perceptual image hash.
 ///
-/// The image header is validated first. Then 72 spatial intensity bins (8 rows x 9 columns)
-/// are sampled from the image content to compute the difference hash.
+/// No pixels are decoded. Kept under the existing name for caller compatibility;
+/// unsuitable for perceptual matching or NCII identification.
 pub fn compute_phash(bytes: &[u8], declared_mime: &str) -> Result<u64, VisionError> {
     let _meta = validate_image(bytes, declared_mime)?;
 

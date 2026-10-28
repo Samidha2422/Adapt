@@ -105,8 +105,20 @@ fn check_is_quoted(text: &str) -> bool {
         "quoted: \"",
     ];
 
-    let lower = text.to_lowercase();
-    REPORTING_PREFIXES.iter().any(|&p| lower.contains(p))
+    let lower = trimmed.to_lowercase();
+    REPORTING_PREFIXES.iter().any(|&prefix| {
+        let Some(quoted) = lower.strip_prefix(prefix) else {
+            return false;
+        };
+        let Some(end) = quoted.find('"') else {
+            return false;
+        };
+        let outside = &quoted[end + 1..];
+        !THREAT_CUES
+            .iter()
+            .chain(COERCION_CUES)
+            .any(|&cue| outside.contains(cue))
+    })
 }
 
 #[cfg(test)]
@@ -132,5 +144,15 @@ mod tests {
         let reporting = "He said \"i will kill you\" when he called";
         let cues2 = detect_cues(reporting);
         assert!(cues2.is_quoted);
+    }
+
+    #[test]
+    fn unrelated_quote_does_not_discount_a_direct_threat() {
+        for text in [
+            "i will kill you; he said \"hello\"",
+            "he said \"hello\"; i will kill you",
+        ] {
+            assert!(!detect_cues(text).is_quoted);
+        }
     }
 }

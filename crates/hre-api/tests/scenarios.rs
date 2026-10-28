@@ -381,7 +381,7 @@ async fn persistence_uses_pseudonyms_and_never_stores_drafts_or_message_text() {
 }
 
 #[tokio::test]
-async fn scenario_3_cyberflashing_proxy_is_high_and_blurred() {
+async fn caption_proxy_keywords_do_not_fabricate_image_scores() {
     let app = app().await;
     let input = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -398,20 +398,121 @@ async fn scenario_3_cyberflashing_proxy_is_high_and_blurred() {
         }
     });
     let response = analyze(&app, input).await;
-    assert_eq!(response.tier, Tier::High);
-    assert_eq!(response.recommended_action, Action::BlurMedia);
-    assert!(response.simulated);
-    assert!(
-        response
-            .reasons
-            .iter()
-            .any(|r| r.code.contains("UNSOLICITED_EXPLICIT_MEDIA")
-                || r.code.contains("REPORTED_HASH"))
-    );
+    assert_eq!(response.tier, Tier::Low);
+    assert_eq!(response.signals.image.score, 0.0);
+    assert_eq!(response.signals.ocr.score, 0.0);
+    assert!(!response.simulated);
+    assert_eq!(response.signals.image.status, hre_core::Status::Roadmap);
+    assert!(!response.signals.image.details.contains_key("sha256"));
 }
 
 #[tokio::test]
-async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
+async fn scenario_3_unsolicited_explicit_image_proxy_triggers_high_and_blur_media_when_demo_mode_enabled(
+) {
+    let benign_bytes = hre_vision::minimal_png(10, 10);
+    let event = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "image",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800, 0).unwrap(),
+        "sender_id": "stranger",
+        "recipient_id": "target",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-3"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "image/png",
+            "caption": "cyberflashing"
+        }
+    });
+
+    // 1. With demo_mode = true: hash override matches, triggering High tier and BlurMedia, labeled simulated: true
+    let demo_app = hre_api::router(
+        EngineConfig {
+            salt: "01234567890123456789012345678901".into(),
+            api_keys: vec!["key".into()],
+            moderator_tokens: vec!["mod".into()],
+            database_url: "sqlite::memory:".into(),
+            demo_mode: true,
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .unwrap();
+
+    let mut body = format!("--hre-boundary\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n{event}\r\n--hre-boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"cyberflashing.png\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
+    body.extend_from_slice(&benign_bytes);
+    body.extend_from_slice(b"\r\n--hre-boundary--\r\n");
+
+    let response = demo_app
+        .clone()
+        .oneshot(
+            Request::post("/v1/analyze/media")
+                .header("x-api-key", "key")
+                .header("content-type", "multipart/form-data; boundary=hre-boundary")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let resp_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let result: Value = serde_json::from_slice(&resp_bytes).unwrap();
+    assert_eq!(result["tier"], "high");
+    assert_eq!(result["recommended_action"], "blur_media");
+    assert_eq!(result["simulated"], true);
+    assert_eq!(result["signals"]["image"]["status"], "simulated");
+    assert!(result["signals"]["image"]["score"].as_f64().unwrap() >= 0.9);
+
+    // 2. With demo_mode = false: same image receives NO forced score and remains Low / Roadmap
+    let prod_app = hre_api::router(
+        EngineConfig {
+            salt: "01234567890123456789012345678901".into(),
+            api_keys: vec!["key".into()],
+            moderator_tokens: vec!["mod".into()],
+            database_url: "sqlite::memory:".into(),
+            demo_mode: false,
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .unwrap();
+
+    let mut body_prod = format!("--hre-boundary\r\nContent-Disposition: form-data; name=\"request\"\r\n\r\n{event}\r\n--hre-boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"cyberflashing.png\"\r\nContent-Type: image/png\r\n\r\n").into_bytes();
+    body_prod.extend_from_slice(&benign_bytes);
+    body_prod.extend_from_slice(b"\r\n--hre-boundary--\r\n");
+
+    let response_prod = prod_app
+        .clone()
+        .oneshot(
+            Request::post("/v1/analyze/media")
+                .header("x-api-key", "key")
+                .header("content-type", "multipart/form-data; boundary=hre-boundary")
+                .body(Body::from(body_prod))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response_prod.status(), StatusCode::OK);
+    let resp_bytes_prod = response_prod
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let result_prod: Value = serde_json::from_slice(&resp_bytes_prod).unwrap();
+    assert_eq!(result_prod["tier"], "low");
+    assert_eq!(result_prod["recommended_action"], "log");
+    assert_eq!(result_prod["simulated"], false);
+    assert_eq!(result_prod["signals"]["image"]["score"], 0.0);
+    assert_eq!(result_prod["signals"]["image"]["status"], "roadmap");
+}
+
+#[tokio::test]
+async fn image_caption_threat_is_text_and_never_ocr() {
     let app = app().await;
     let input = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -429,16 +530,15 @@ async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
     });
     let response = analyze(&app, input).await;
     assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
-    assert_eq!(response.recommended_action, Action::BlurMedia);
-    assert!(response
-        .reasons
-        .iter()
-        .any(|r| r.code == "OCR_ABUSE" || r.code.contains("THREAT")));
-    assert!(response.signals.ocr.score >= 0.5);
+    assert_eq!(response.recommended_action, Action::Escalate);
+    assert!(response.reasons.iter().any(|r| r.code.contains("THREAT")));
+    assert_eq!(response.signals.ocr.score, 0.0);
+    assert!(response.signals.text.score >= 0.9);
+    assert!(!response.simulated);
 }
 
 #[tokio::test]
-async fn scenario_5_voice_note_threatening_transcribed_shows_transcript() {
+async fn scenario_5_audio_caption_is_not_treated_as_a_transcription() {
     let app = app().await;
     let input = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -454,13 +554,10 @@ async fn scenario_5_voice_note_threatening_transcribed_shows_transcript() {
             "caption": "threat:I will find you and kill you"
         }
     });
-    let response = analyze(&app, input).await;
-    assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
-    assert!(response.signals.audio.score >= 0.8);
-    assert!(response
-        .secondary_actions
-        .contains(&SecondaryAction::ShowTranscript));
-    assert!(response.reasons.iter().any(|r| r.code.contains("THREAT")));
+    assert_eq!(
+        post(&app, "/v1/analyze", &input).await,
+        StatusCode::NOT_IMPLEMENTED
+    );
 }
 
 #[tokio::test]
@@ -615,7 +712,7 @@ async fn scenario_8_slang_update_miss_confirm_caught() {
 async fn scenario_9_evidence_export_multimodal_timeline_hash_chained_and_verifiable() {
     let app = app().await;
 
-    // Seed events across multimodal channels: message, image, audio, call
+    // Seed supported events and verify that unavailable audio is not persisted.
     let mut msg_ev = event("harasser", "victim", 1);
     msg_ev["message"]["text"] = json!("I know where you live");
     analyze(&app, msg_ev).await;
@@ -650,7 +747,10 @@ async fn scenario_9_evidence_export_multimodal_timeline_hash_chained_and_verifia
             "caption": "threat:I will find you"
         }
     });
-    analyze(&app, aud_ev).await;
+    assert_eq!(
+        post(&app, "/v1/analyze", &aud_ev).await,
+        StatusCode::NOT_IMPLEMENTED
+    );
 
     let call_ev = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -687,7 +787,7 @@ async fn scenario_9_evidence_export_multimodal_timeline_hash_chained_and_verifia
     let export_body: Value =
         serde_json::from_slice(&res_exp.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let record_count = export_body["record_count"].as_u64().unwrap();
-    assert_eq!(record_count, 4);
+    assert_eq!(record_count, 3);
     assert!(!export_body["manifest_hash"].as_str().unwrap().is_empty());
     assert!(!export_body["hmac_signature"].as_str().unwrap().is_empty());
 

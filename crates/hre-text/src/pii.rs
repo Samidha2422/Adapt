@@ -90,7 +90,6 @@ pub fn generate_verhoeff(digits: &[u8]) -> u8 {
 /// Scans text and detects all Indian PII occurrences.
 pub fn detect_pii(text: &str) -> Vec<PiiMatch> {
     let mut matches = Vec::new();
-    let lower_text = text.to_lowercase();
     let bytes = text.as_bytes();
     let len = bytes.len();
 
@@ -111,6 +110,9 @@ pub fn detect_pii(text: &str) -> Vec<PiiMatch> {
                     has_dot = true;
                 }
                 end += 1;
+            }
+            while end > i + 1 && matches!(bytes[end - 1], b'.' | b'-') {
+                end -= 1;
             }
             if start < i && end > i + 1 {
                 let domain = &text[i + 1..end];
@@ -271,7 +273,7 @@ pub fn detect_pii(text: &str) -> Vec<PiiMatch> {
 
     // 5. Scan for Indian PIN codes: 6 digits starting with 1-9 near address cues
     let mut pin_idx = 0;
-    while pin_idx <= len.saturating_sub(6) {
+    while pin_idx + 6 <= len {
         if (b'1'..=b'9').contains(&bytes[pin_idx])
             && (pin_idx == 0 || !bytes[pin_idx - 1].is_ascii_alphanumeric())
             && (pin_idx + 6 == len || !bytes[pin_idx + 6].is_ascii_alphanumeric())
@@ -284,10 +286,15 @@ pub fn detect_pii(text: &str) -> Vec<PiiMatch> {
                     .any(|m| pin_idx >= m.start && pin_idx + 6 <= m.end);
                 if !overlaps {
                     // Check address context window (+/- 50 chars)
-                    let ctx_start = pin_idx.saturating_sub(50);
-                    let ctx_end = (pin_idx + 56).min(len);
-                    let ctx = &lower_text[ctx_start..ctx_end];
-                    if has_address_cue(ctx) {
+                    let mut ctx_start = pin_idx.saturating_sub(50);
+                    let mut ctx_end = (pin_idx + 56).min(len);
+                    while !text.is_char_boundary(ctx_start) {
+                        ctx_start += 1;
+                    }
+                    while !text.is_char_boundary(ctx_end) {
+                        ctx_end -= 1;
+                    }
+                    if has_address_cue(&text[ctx_start..ctx_end].to_lowercase()) {
                         matches.push(PiiMatch {
                             kind: PiiKind::Pin,
                             masked_placeholder: "[PIN]".into(),

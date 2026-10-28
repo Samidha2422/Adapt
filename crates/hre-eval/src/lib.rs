@@ -47,3 +47,6 @@ mod tests {
         assert!(cases.iter().any(|c| c.scenario_class == "night_caller"));
     }
 }
+
+pub mod independent;
+pub use independent::{evaluate, write_report, EvalError, Report};

@@ -17,7 +17,6 @@ pub(crate) struct Engine {
     image: hre_vision::HeuristicImageBackend,
     ocr: hre_vision::HeuristicOcrBackend,
     pub(crate) audio: hre_audio::HeuristicAudioBackend,
-    pub(crate) call_config: hre_calls::CallFeatureConfig,
     pub(crate) jobs: hre_audio::JobManager,
     pub(crate) slang_lexicon: hre_slang::SlangLexicon,
     pub(crate) slang_miner: hre_slang::CandidateMiner,
@@ -56,15 +55,19 @@ impl Engine {
         } else if config.night_timezone != "UTC" {
             anyhow::bail!("night_timezone currently supports Asia/Kolkata or UTC");
         }
-        let image = tokio::task::spawn_blocking(|| {
-            hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
-                "config/demo_overrides.toml",
-            ))
+        let demo_mode = config.demo_mode;
+        let image = tokio::task::spawn_blocking(move || {
+            if demo_mode {
+                hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
+                    "config/demo_overrides.toml",
+                ))
+            } else {
+                hre_vision::HeuristicImageBackend::new()
+            }
         })
         .await?;
         let ocr = hre_vision::HeuristicOcrBackend::new();
         let audio = hre_audio::HeuristicAudioBackend::new();
-        let call_config = hre_calls::CallFeatureConfig::default();
         let jobs = hre_audio::JobManager::new();
         let slang_lexicon = hre_slang::SlangLexicon::new();
         let slang_miner = hre_slang::CandidateMiner::new();
@@ -83,7 +86,6 @@ impl Engine {
             image,
             ocr,
             audio,
-            call_config,
             jobs,
             slang_lexicon,
             slang_miner,
@@ -94,24 +96,199 @@ impl Engine {
         &self,
         request: &AnalyzeRequest,
     ) -> Result<(AnalyzeResponse, bool), ApiError> {
+        self.analyze_image(request, None).await
+    }
+    pub async fn analyze_image(
+        &self,
+        request: &AnalyzeRequest,
+        image_bytes: Option<Vec<u8>>,
+    ) -> Result<(AnalyzeResponse, bool), ApiError> {
+        self.analyze_inner(request, image_bytes, None).await
+    }
+    pub async fn parse_calls(
+        &self,
+        csv: String,
+        platform: String,
+    ) -> Result<Vec<hre_calls::safe_import::CallRecord>, ApiError> {
+        let ids = self.ids.clone();
+        tokio::task::spawn_blocking(move || hre_calls::import_csv(csv.as_bytes(), &ids, &platform))
+            .await
+            .map_err(|_| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "CSV worker unavailable")
+            })?
+            .map_err(|error| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, &error.to_string()))
+    }
+    pub async fn analyze_call(
+        &self,
+        record: &hre_calls::safe_import::CallRecord,
+        platform: &str,
+        conversation_id: &str,
+        draft: bool,
+    ) -> Result<(AnalyzeResponse, bool), ApiError> {
+        let request = AnalyzeRequest {
+            event_id: record.event_id,
+            kind: EventKind::CallEvent,
+            occurred_at: record.occurred_at,
+            draft,
+            // The parser already HMACed these; analyze_inner must not hash them again.
+            sender_id: record.caller.0.clone(),
+            recipient_id: record.callee.0.clone(),
+            platform: platform.into(),
+            channel: Channel {
+                kind: ChannelType::Call,
+                conversation_id: conversation_id.into(),
+                group_id: None,
+                post_id: None,
+            },
+            context: EventContext {
+                stop_requested: record.after_refusal,
+                ..Default::default()
+            },
+            message: None,
+            media: None,
+            call: Some(Call {
+                direction: CallDirection::Outgoing,
+                duration_s: record.duration_s,
+                answered: record.answered,
+                voicemail: record.voicemail,
+            }),
+        };
+        request.validate()?;
+        self.analyze_inner(&request, None, Some(record)).await
+    }
+    async fn analyze_inner(
+        &self,
+        request: &AnalyzeRequest,
+        image_bytes: Option<Vec<u8>>,
+        imported_call: Option<&hre_calls::safe_import::CallRecord>,
+    ) -> Result<(AnalyzeResponse, bool), ApiError> {
         let started = Instant::now();
+        let envelope = request.clone();
+        let image = self.image.clone();
+        let ocr = self.ocr.clone();
+        let (mut text_report, image_analysis, ocr_report) =
+            tokio::task::spawn_blocking(move || {
+                let text = envelope
+                    .message
+                    .as_ref()
+                    .map(|m| m.text.as_str())
+                    .or_else(|| envelope.media.as_ref().and_then(|m| m.caption.as_deref()));
+                let text_report = text
+                    .filter(|s| !s.trim().is_empty())
+                    .map(hre_text::analyze)
+                    .transpose()
+                    .map_err(|_| {
+                        ApiError::new(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "invalid or oversized text",
+                        )
+                    })?;
+                let (image_analysis, ocr_report) = if let Some(bytes) = image_bytes {
+                    let mime = envelope.media.as_ref().map_or("", |m| m.mime.as_str());
+                    let mut analysis = image.analyze(&bytes, mime).map_err(|_| {
+                        ApiError::new(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "invalid image or MIME mismatch",
+                        )
+                    })?;
+                    // Encoded-byte sampling is not a perceptual image hash.
+                    analysis.signal.details.remove("p_hash");
+                    analysis
+                        .signal
+                        .details
+                        .insert("source".into(), serde_json::json!("uploaded_bytes"));
+                    analysis
+                        .degraded
+                        .push("image.perceptual_hash_unavailable".into());
+                    if !analysis.simulated {
+                        analysis.signal.status = Status::Roadmap;
+                        analysis.signal.backend = Backend::Disabled;
+                        analysis.signal.label = "image_model_unavailable".into();
+                    }
+                    let mut report = ocr.process_image(&bytes, mime).map_err(|_| {
+                        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid image for OCR")
+                    })?;
+                    if !report.raw_text.is_empty() {
+                        report.simulated = true;
+                        report.signal.status = Status::Simulated;
+                        report.signal.label = "embedded_metadata_text".into();
+                        report
+                            .degraded
+                            .push("ocr.metadata_extraction_simulated".into());
+                    } else {
+                        report.signal.status = Status::Roadmap;
+                        report.signal.backend = Backend::Disabled;
+                    }
+                    // Keep derived counts/scores, never persist or expose media text bodies.
+                    report.signal.details.remove("ocr_text_masked");
+                    (Some(analysis), Some(report))
+                } else {
+                    (None, None)
+                };
+                Ok::<_, ApiError>((text_report, image_analysis, ocr_report))
+            })
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "analysis worker unavailable",
+                )
+            })??;
+        if let (Some(message), Some(report)) = (&request.message, &mut text_report) {
+            if let Ok(matches) = self.slang_lexicon.find_matches(&message.text) {
+                if let Some(term) = matches.first() {
+                    report.primary_signal.score = report.primary_signal.score.max(term.severity);
+                    report.primary_signal.label = "slang_harassment".into();
+                    report.primary_signal.backend = Backend::Heuristic;
+                    report.primary_signal.status = Status::Built;
+                    report.toxicity = report.toxicity.max(term.severity);
+                    report.reasons.push(Reason {
+                        code: "SLANG_MATCH".into(),
+                        text: format!(
+                            "Confirmed slang term '{}' detected: {}",
+                            term.term, term.meaning
+                        ),
+                        weight: term.severity,
+                        evidence: BTreeMap::from([
+                            ("term".into(), serde_json::json!(term.term)),
+                            ("meaning".into(), serde_json::json!(term.meaning)),
+                        ]),
+                    });
+                }
+            }
+        }
         let _gate = self.gate.lock().await;
         let store = self.store.as_ref().ok_or_else(|| {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
         })?;
-        let request_hash = self.ids.opaque(
-            "request",
-            &serde_json::to_string(request).map_err(|_| {
-                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "cannot encode request")
-            })?,
-        )?;
+        let encoded_request = if let Some(image) = &image_analysis {
+            serde_json::to_string(&(request, &image.sha256))
+        } else if let Some(call) = imported_call {
+            serde_json::to_string(&(request, call.simulated))
+        } else {
+            serde_json::to_string(request)
+        }
+        .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "cannot encode request"))?;
+        let request_hash = self.ids.opaque("request", &encoded_request)?;
         if !request.draft {
             if let Some(cached) = store.assessment(&request.event_id.to_string()).await? {
                 return cached_response(&cached, &request_hash).map(|response| (response, false));
             }
         }
-        let sender = self.ids.subject(&request.platform, &request.sender_id)?;
-        let recipient = self.ids.subject(&request.platform, &request.recipient_id)?;
+        if matches!(request.kind, EventKind::Audio) {
+            return Err(ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "audio analysis requires the audio pipeline; use --mock for client fixtures",
+            ));
+        }
+        let (sender, recipient) = if let Some(call) = imported_call {
+            (call.caller.clone(), call.callee.clone())
+        } else {
+            (
+                self.ids.subject(&request.platform, &request.sender_id)?,
+                self.ids.subject(&request.platform, &request.recipient_id)?,
+            )
+        };
         let now = request.occurred_at.timestamp_millis();
         let mut events = store
             .target_window(&recipient.0, now.saturating_sub(7 * 86400000), now)
@@ -160,7 +337,9 @@ impl Engine {
             content_hash: request
                 .message
                 .as_ref()
-                .map(|m| self.ids.opaque("content", &m.text))
+                .map(|m| m.text.as_str())
+                .or_else(|| request.media.as_ref().and_then(|m| m.caption.as_deref()))
+                .map(|text| self.ids.opaque("content", text))
                 .transpose()?,
             sender_account_age_days: request.context.sender_account_age_days.map(f64::from),
             is_contact: request.context.is_contact,
@@ -172,206 +351,50 @@ impl Engine {
                 .map_or(0.0, |c| f64::from(c.duration_s)),
             ..StoredEvent::default()
         };
-        // Full text normalization, multi-label analysis, PII masking, cue detection, and slang matching
-        let mut slang_matches: Vec<hre_slang::SlangMatch> = Vec::new();
-        let text_report = if let Some(msg) = request.message.as_ref() {
-            if let Ok(matches) = self.slang_lexicon.find_matches(&msg.text) {
-                slang_matches = matches;
-            }
-            match hre_text::analyze(&msg.text) {
-                Ok(mut rep) => {
-                    if let Some(m) = slang_matches.first() {
-                        rep.primary_signal.score = rep.primary_signal.score.max(m.severity);
-                        rep.primary_signal.label = "slang_harassment".into();
-                        rep.primary_signal.backend = Backend::Heuristic;
-                        rep.primary_signal.status = Status::Built;
-                        rep.reasons.push(Reason {
-                            code: "SLANG_MATCH".into(),
-                            text: format!(
-                                "Confirmed slang term '{}' detected: {}",
-                                m.term, m.meaning
-                            ),
-                            weight: m.severity,
-                            evidence: BTreeMap::from([
-                                ("term".into(), serde_json::json!(m.term)),
-                                ("meaning".into(), serde_json::json!(m.meaning)),
-                            ]),
-                        });
-                    }
-                    event.toxicity = rep
-                        .toxicity
-                        .max(slang_matches.first().map_or(0.0, |m| m.severity));
-                    event.threat = rep.threat;
-                    event.sexual = rep.sexual_explicit;
-                    event.pii_mentions = rep.pii_matches.len() as u32;
-                    event.location_cues = rep.location_cues as u32;
-                    Some(rep)
-                }
-                Err(hre_text::TextError::EmptyText) => None,
-                Err(e) => {
-                    return Err(ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()));
-                }
-            }
-        } else {
-            None
-        };
-
-        // Vision screening, OCR extraction, and reported-hash matching
-        let mut image_analysis: Option<hre_vision::ImageAnalysis> = None;
-        let mut ocr_report: Option<hre_vision::OcrReport> = None;
         let mut reported_hash_match = false;
         let mut unsolicited_explicit = false;
-
-        if request.kind == EventKind::Image {
-            if let Some(media) = &request.media {
-                let caption = media.caption.as_deref().unwrap_or("").trim();
-                let is_proxy = caption.contains("cyberflasher")
-                    || caption.contains("cyberflashing")
-                    || caption.starts_with("proxy:")
-                    || caption.starts_with("hash:");
-
-                let img_bytes = if is_proxy {
-                    let proxy_hash =
-                        if caption.starts_with("hash:") || caption.starts_with("sha256:") {
-                            caption.split(':').nth(1).unwrap_or("").trim()
-                        } else {
-                            "cf10000000000000000000000000000000000000000000000000000000000001"
-                        };
-                    hre_vision::png_with_text("ProxyHash", proxy_hash)
-                } else if !caption.is_empty() {
-                    hre_vision::png_with_text("Description", caption)
-                } else {
-                    hre_vision::minimal_png(10, 10)
-                };
-
-                // Image screening
-                if let Ok(mut analysis) = self.image.analyze(&img_bytes, &media.mime) {
-                    if is_proxy {
-                        analysis.signal.status = Status::Simulated;
-                        analysis.signal.score = 0.95;
-                        analysis.simulated = true;
-                        analysis.recommended_action = Some(Action::BlurMedia);
-                    }
-                    if let Ok(Some(_)) = store.find_reported_hash(analysis.p_hash, 5).await {
-                        reported_hash_match = true;
-                    }
-                    if (analysis.signal.score >= 0.5 || is_proxy) && !request.context.is_contact {
-                        unsolicited_explicit = true;
-                    }
-                    image_analysis = Some(analysis);
-                }
-
-                // OCR screening
-                if let Ok(ocr) = self.ocr.process_image(&img_bytes, &media.mime) {
-                    if ocr.signal.score >= 0.5 {
-                        event.threat = event.threat.max(ocr.signal.score);
-                        event.toxicity = event.toxicity.max(ocr.signal.score);
-                    }
-                    ocr_report = Some(ocr);
-                }
+        if let Some(rep) = &text_report {
+            event.toxicity = rep.toxicity;
+            event.threat = rep.threat;
+            event.sexual = rep.sexual_explicit;
+            event.pii_mentions = rep.pii_matches.len() as u32;
+            event.location_cues = rep.location_cues as u32;
+        }
+        if let Some(ocr) = &ocr_report {
+            if let Some(rep) = &ocr.text_report {
+                event.toxicity = event.toxicity.max(rep.toxicity);
+                event.threat = event.threat.max(rep.threat);
+                event.sexual = event.sexual.max(rep.sexual_explicit);
+                event.pii_mentions += rep.pii_matches.len() as u32;
+                event.location_cues += rep.location_cues as u32;
             }
         }
-
-        // Audio screening and transcription
-        let mut audio_report: Option<hre_audio::AudioReport> = None;
-        if request.kind == EventKind::Audio {
-            if let Some(media) = &request.media {
-                let caption = media.caption.as_deref().unwrap_or("").trim();
-                let is_proxy = caption.contains("voice_note")
-                    || caption.starts_with("proxy:")
-                    || caption.starts_with("threat:")
-                    || !caption.is_empty();
-
-                let audio_bytes = if is_proxy {
-                    let transcript = if caption.starts_with("threat:") {
-                        caption.split(':').nth(1).unwrap_or("").trim()
-                    } else if !caption.is_empty() {
-                        caption
-                    } else {
-                        "I will find you and kill you"
-                    };
-                    hre_audio::minimal_mp3_with_comment(transcript)
-                } else {
-                    hre_audio::minimal_wav(1)
-                };
-
-                let mime = if media.mime.is_empty() || is_proxy {
-                    "audio/mpeg"
-                } else {
-                    &media.mime
-                };
-
-                if let Ok(mut rep) = self.audio.process_audio(&audio_bytes, mime) {
-                    if rep.signal.score >= 0.5 || is_proxy {
-                        event.threat = event.threat.max(rep.signal.score);
-                        event.toxicity = event.toxicity.max(rep.signal.score);
-                    }
-                    if is_proxy {
-                        rep.simulated = true;
-                    }
-                    audio_report = Some(rep);
-                }
-            }
+        if let Some(analysis) = &image_analysis {
+            // Exact SHA comparison prevents encoded-byte hash collisions becoming verdicts.
+            let key = image_hash_key(&analysis.sha256)?;
+            reported_hash_match = store
+                .find_reported_hash(key, 0)
+                .await?
+                .is_some_and(|matched| matched.sha256 == analysis.sha256);
+            unsolicited_explicit = analysis.signal.score >= 0.5 && !request.context.is_contact;
         }
-
-        // Call features extraction & risk assessment
-        let mut call_records: Vec<hre_calls::CallRecord> = Vec::new();
-        for ev in &events {
-            if ev.kind == StoredKind::Call {
-                let dir = if ev.sender == sender.0 {
-                    CallDirection::Incoming
-                } else {
-                    CallDirection::Outgoing
-                };
-                call_records.push(hre_calls::CallRecord {
-                    timestamp_ms: ev.timestamp_ms,
-                    caller: ev.sender.clone(),
-                    callee: ev.recipient.clone(),
-                    duration_s: ev.duration_s as u32,
-                    answered: ev.answered,
-                    direction: dir,
-                    voicemail: false,
-                });
-            }
-        }
-        if request.kind == EventKind::CallEvent {
-            let dir = request
-                .call
-                .as_ref()
-                .map_or(CallDirection::Incoming, |c| c.direction);
-            call_records.push(hre_calls::CallRecord {
-                timestamp_ms: now,
-                caller: sender.0.clone(),
-                callee: recipient.0.clone(),
-                duration_s: request.call.as_ref().map_or(0, |c| c.duration_s),
-                answered: request.call.as_ref().is_some_and(|c| c.answered),
-                direction: dir,
-                voicemail: request.call.as_ref().is_some_and(|c| c.voicemail),
-            });
-        }
-        let call_report = if request.kind == EventKind::CallEvent
-            || (!call_records.is_empty() && events.iter().any(|e| e.kind == StoredKind::Call))
-        {
-            let call_features = hre_calls::extract_call_features(
-                &call_records,
-                &sender.0,
-                &recipient.0,
-                now,
-                &self.call_config,
-            );
-            Some(hre_calls::evaluate_call_risk(
-                &call_features,
-                if after_refusal { 1 } else { 0 },
-            ))
-        } else {
-            None
-        };
-
+        event.unsolicited_media = unsolicited_explicit;
+        event.simulated = image_analysis.as_ref().is_some_and(|i| i.simulated)
+            || ocr_report.as_ref().is_some_and(|o| o.simulated)
+            || reported_hash_match
+            || imported_call.is_some_and(|c| c.simulated);
+        let audio_report: Option<hre_audio::AudioReport> = None;
         events.retain(|e| e.event_id != event.event_id);
         events.push(event.clone());
         let behavior_config = self.behavior.clone();
         let fusion_config = self.fusion.clone();
         let registry = self.registry.clone();
+        let call_config = hre_calls::CallFeatureConfig {
+            night_start_hour: self.behavior.night_start_hour,
+            night_end_hour: self.behavior.night_end_hour,
+            utc_offset_minutes: self.behavior.recipient_utc_offset_minutes,
+        };
+        let voicemail = request.call.as_ref().is_some_and(|call| call.voicemail);
         let pending = event.clone();
         let event_id = request.event_id;
         let mut response = tokio::task::spawn_blocking(move || {
@@ -383,12 +406,13 @@ impl Engine {
                 image_analysis.as_ref(),
                 ocr_report.as_ref(),
                 audio_report.as_ref(),
-                call_report.as_ref(),
                 reported_hash_match,
                 unsolicited_explicit,
                 &behavior_config,
                 &fusion_config,
                 &registry,
+                &call_config,
+                voicemail,
             )
         })
         .await
@@ -441,12 +465,13 @@ impl Engine {
         image_analysis: Option<&hre_vision::ImageAnalysis>,
         ocr_report: Option<&hre_vision::OcrReport>,
         audio_report: Option<&hre_audio::AudioReport>,
-        call_report: Option<&hre_calls::CallRiskReport>,
         reported_hash_match: bool,
         unsolicited_explicit: bool,
         behavior_config: &hre_behavior::BehaviorConfig,
         fusion_config: &hre_fusion::FusionConfig,
         registry: &hre_ml::ModelRegistry,
+        call_config: &hre_calls::CallFeatureConfig,
+        voicemail: bool,
     ) -> AnalyzeResponse {
         let behavior = hre_behavior::analyze(
             events,
@@ -455,6 +480,56 @@ impl Engine {
             event.timestamp_ms,
             behavior_config,
         );
+        let calls: Vec<_> = events
+            .iter()
+            .filter(|item| {
+                item.kind == StoredKind::Call
+                    && item.sender == event.sender
+                    && item.recipient == event.recipient
+            })
+            .map(|item| hre_calls::CallRecord {
+                timestamp_ms: item.timestamp_ms,
+                caller: item.sender.clone(),
+                callee: item.recipient.clone(),
+                duration_s: item.duration_s as u32,
+                answered: item.answered,
+                direction: CallDirection::Incoming,
+                voicemail: item.event_id == event.event_id && voicemail,
+            })
+            .collect();
+        let call_report = if calls.is_empty() {
+            None
+        } else {
+            let features = hre_calls::extract_call_features(
+                &calls,
+                &event.sender,
+                &event.recipient,
+                event.timestamp_ms,
+                call_config,
+            );
+            let after_refusal = events
+                .iter()
+                .filter(|item| {
+                    item.kind == StoredKind::Call
+                        && item.sender == event.sender
+                        && item.recipient == event.recipient
+                        && item.after_refusal
+                        && item.timestamp_ms <= event.timestamp_ms
+                })
+                .count();
+            let mut report = hre_calls::evaluate_call_risk(&features, after_refusal);
+            if events.iter().any(|item| {
+                item.kind == StoredKind::Call
+                    && item.sender == event.sender
+                    && item.recipient == event.recipient
+                    && item.simulated
+                    && item.timestamp_ms <= event.timestamp_ms
+                    && item.timestamp_ms >= event.timestamp_ms.saturating_sub(7 * 86_400_000)
+            }) {
+                report.signal.status = Status::Simulated;
+            }
+            Some(report)
+        };
         let (text_signal, pii_signal, text_reasons, text_degraded) = if let Some(rep) = text_report
         {
             (
@@ -466,10 +541,10 @@ impl Engine {
         } else {
             (
                 Signal {
-                    score: event.toxicity,
+                    score: 0.0,
                     label: "text_none".into(),
-                    status: Status::Built,
-                    backend: Backend::Heuristic,
+                    status: Status::Roadmap,
+                    backend: Backend::Disabled,
                     confidence: 0.0,
                     details: BTreeMap::new(),
                 },
@@ -486,7 +561,7 @@ impl Engine {
                 Signal {
                     score: 0.0,
                     label: "image_none".into(),
-                    status: Status::Built,
+                    status: Status::Roadmap,
                     backend: Backend::Disabled,
                     confidence: 0.0,
                     details: BTreeMap::new(),
@@ -502,7 +577,7 @@ impl Engine {
                 Signal {
                     score: 0.0,
                     label: "ocr_none".into(),
-                    status: Status::Built,
+                    status: Status::Roadmap,
                     backend: Backend::Disabled,
                     confidence: 0.0,
                     details: BTreeMap::new(),
@@ -518,7 +593,7 @@ impl Engine {
                 Signal {
                     score: 0.0,
                     label: "audio_none".into(),
-                    status: Status::Built,
+                    status: Status::Roadmap,
                     backend: Backend::Disabled,
                     confidence: 0.0,
                     details: BTreeMap::new(),
@@ -527,23 +602,7 @@ impl Engine {
             )
         };
 
-        let (call_signal, call_reasons) = if let Some(call) = call_report {
-            (call.signal.clone(), call.reasons.clone())
-        } else {
-            (
-                Signal {
-                    score: 0.0,
-                    label: "call_none".into(),
-                    status: Status::Built,
-                    backend: Backend::Disabled,
-                    confidence: 0.0,
-                    details: BTreeMap::new(),
-                },
-                Vec::new(),
-            )
-        };
-
-        let signals = Signals {
+        let mut signals = Signals {
             behavior: behavior.behavior,
             pile_on: behavior.pile_on,
             text: text_signal,
@@ -551,21 +610,33 @@ impl Engine {
             image: image_signal,
             ocr: ocr_signal,
             audio: audio_signal,
-            call: call_signal,
+            call: call_report
+                .as_ref()
+                .map_or_else(Signal::default, |report| report.signal.clone()),
         };
         let mut reasons = behavior.reasons;
         reasons.extend(text_reasons);
-        reasons.extend(call_reasons);
+        if let Some(report) = &call_report {
+            reasons.extend(report.reasons.clone());
+        }
         if let Some(ocr) = ocr_report {
+            if let Some(report) = &ocr.text_report {
+                if report.primary_signal.score > signals.text.score {
+                    signals.text = report.primary_signal.clone();
+                    signals.text.status = Status::Simulated;
+                }
+                if report.pii_signal.score > signals.pii.score {
+                    signals.pii = report.pii_signal.clone();
+                    signals.pii.status = Status::Simulated;
+                }
+                reasons.extend(report.reasons.clone());
+            }
             if ocr.signal.score >= 0.5 {
                 reasons.push(Reason {
                     code: "OCR_ABUSE".into(),
-                    text: "Abusive text detected in image screenshot".into(),
+                    text: "Abusive text in image metadata (simulated OCR)".into(),
                     weight: ocr.signal.score,
-                    evidence: BTreeMap::from([(
-                        "ocr_text".into(),
-                        serde_json::json!(ocr.masked_text),
-                    )]),
+                    evidence: BTreeMap::new(),
                 });
             }
         }
@@ -579,7 +650,7 @@ impl Engine {
         degraded.extend(ocr_degraded);
         degraded.extend(audio_degraded);
         if call_report.is_none() {
-            degraded.extend(["call.unavailable".into()]);
+            degraded.push("call.unavailable".into());
         }
         degraded.sort();
         degraded.dedup();
@@ -588,6 +659,7 @@ impl Engine {
             reasons,
             degraded,
             threat: event.threat,
+            doxxing_with_toxicity: event.pii_mentions > 0 && event.toxicity >= 0.6,
             unsolicited_explicit,
             reported_hash_match,
             after_refusal_count: behavior.after_refusal_count,
@@ -595,9 +667,11 @@ impl Engine {
             reply_to_harasser: behavior.reply_to_harasser,
             feed_protection: behavior.feed_protection,
             tone: audio_report.map_or(0.0, |a| a.tone_signal.score),
-            simulated: behavior.simulated
+            simulated: event.simulated
+                || behavior.simulated
                 || image_analysis.as_ref().is_some_and(|i| i.simulated)
                 || audio_report.as_ref().is_some_and(|a| a.simulated)
+                || ocr_report.is_some_and(|o| o.simulated)
                 || reported_hash_match,
             ..hre_fusion::FusionInput::default()
         };
@@ -694,32 +768,41 @@ impl Engine {
         store.insert_event(&event).await?;
         Ok(())
     }
-    pub async fn import_call_logs(&self, csv_data: &str) -> Result<usize, ApiError> {
+    pub async fn import_call_logs(&self, csv: String) -> Result<usize, ApiError> {
+        if csv.len() > hre_calls::MAX_CSV_BYTES {
+            return Err(ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "CSV exceeds two MiB",
+            ));
+        }
+        let records = tokio::task::spawn_blocking(move || hre_calls::parse_call_log_csv(&csv))
+            .await
+            .map_err(|_| {
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "CSV worker unavailable")
+            })?
+            .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid call CSV"))?;
         let store = self.store.as_ref().ok_or_else(|| {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
         })?;
-        let records = hre_calls::parse_call_log_csv(csv_data)
-            .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()))?;
-        let mut count = 0;
-        for rec in &records {
-            let sender = self.ids.subject("phone", &rec.caller)?;
-            let recipient = self.ids.subject("phone", &rec.callee)?;
+        let _gate = self.gate.lock().await;
+        let mut imported = 0;
+        for record in records {
             let event = StoredEvent {
                 event_id: uuid::Uuid::new_v4().to_string(),
-                sender: sender.0,
-                recipient: recipient.0,
-                timestamp_ms: rec.timestamp_ms,
+                sender: self.ids.subject("phone", &record.caller)?.0,
+                recipient: self.ids.subject("phone", &record.callee)?.0,
+                timestamp_ms: record.timestamp_ms,
                 kind: StoredKind::Call,
                 channel: self.ids.opaque("channel", "voice")?,
-                answered: rec.answered,
-                duration_s: f64::from(rec.duration_s),
+                answered: record.answered,
+                duration_s: f64::from(record.duration_s),
                 ..StoredEvent::default()
             };
             if store.insert_event(&event).await? {
-                count += 1;
+                imported += 1;
             }
         }
-        Ok(count)
+        Ok(imported)
     }
     pub async fn alerts(&self) -> Result<Vec<AnalyzeResponse>, ApiError> {
         let Some(store) = &self.store else {
@@ -753,30 +836,43 @@ impl Engine {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
         })?;
         let _gate = self.gate.lock().await;
-        let cached = store.assessment(&request.event_id.to_string()).await?;
-        let (phash, sha) = if let Some(val) = cached {
-            let phash = val
-                .pointer("/response/signals/image/details/p_hash")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let sha = val
-                .pointer("/response/signals/image/details/sha256")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            (phash, sha)
-        } else {
-            (
-                0u64,
-                format!(
-                    "{:x}",
-                    <sha2::Sha256 as sha2::Digest>::digest(request.event_id.as_bytes())
-                ),
-            )
-        };
-        let now = chrono::Utc::now().timestamp_millis();
+        if request.reason.trim().is_empty() || request.reason.len() > 1024 {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "reason must contain 1..1024 bytes",
+            ));
+        }
+        let cached = store
+            .assessment(&request.event_id.to_string())
+            .await?
+            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "analyzed event not found"))?;
+        if cached
+            .pointer("/response/signals/image/details/source")
+            .and_then(|v| v.as_str())
+            != Some("uploaded_bytes")
+        {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "event has no uploaded image",
+            ));
+        }
+        let sha = cached
+            .pointer("/response/signals/image/details/sha256")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "event has no uploaded image hash",
+                )
+            })?;
+        let key = image_hash_key(sha)?;
         store
-            .insert_reported_hash(phash, &sha, &request.reason, now)
+            .insert_reported_hash(
+                key,
+                sha,
+                "user_reported_media",
+                chrono::Utc::now().timestamp_millis(),
+            )
             .await?;
         Ok(())
     }
@@ -863,6 +959,16 @@ impl Engine {
             Err(_) => Ok(false),
         }
     }
+}
+fn image_hash_key(sha: &str) -> Result<u64, ApiError> {
+    if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid image hash",
+        ));
+    }
+    u64::from_str_radix(&sha[..16], 16)
+        .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid image hash"))
 }
 fn cached_response(
     cached: &serde_json::Value,

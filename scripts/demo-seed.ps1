@@ -43,6 +43,43 @@ function Send-Event([string] $Sender, [string] $Recipient, [int] $Offset, [bool]
     }
     Invoke-RestMethod -Method Post -Uri "$BaseUrl/v1/analyze" -Headers $headers -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 8)
 }
+$benignPng = [byte[]]@(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 10, 0, 0, 0, 10, 8, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82)
+function Send-Image([string] $Sender, [string] $Recipient, [int] $Offset, [byte[]] $ImageBytes, [string] $Caption = '') {
+    $boundary = [System.Guid]::NewGuid().ToString()
+    $bodyJson = @{
+        event_id = [guid]::NewGuid().ToString()
+        kind = 'image'
+        occurred_at = $start.AddSeconds($Offset).ToString('o')
+        sender_id = $Sender
+        recipient_id = $Recipient
+        platform = 'demo-chat'
+        channel = @{ type = 'dm'; conversation_id = "seed-$run" }
+        context = @{ is_contact = $false }
+        media = @{ mime = 'image/png'; caption = $Caption }
+    } | ConvertTo-Json -Depth 8
+
+    $LF = "`r`n"
+    $ms = New-Object System.IO.MemoryStream
+    $enc = [System.Text.Encoding]::UTF8
+
+    $part1 = "--$boundary$LF" +
+             "Content-Disposition: form-data; name=`"request`"$LF$LF" +
+             "$bodyJson$LF" +
+             "--$boundary$LF" +
+             "Content-Disposition: form-data; name=`"image`"; filename=`"cyberflashing.png`"$LF" +
+             "Content-Type: image/png$LF$LF"
+    $p1Bytes = $enc.GetBytes($part1)
+    $ms.Write($p1Bytes, 0, $p1Bytes.Length)
+    $ms.Write($ImageBytes, 0, $ImageBytes.Length)
+    $p2Bytes = $enc.GetBytes("$LF--$boundary--$LF")
+    $ms.Write($p2Bytes, 0, $p2Bytes.Length)
+
+    $reqHeaders = @{
+        'X-API-Key' = $key
+        'Content-Type' = "multipart/form-data; boundary=$boundary"
+    }
+    Invoke-RestMethod -Method Post -Uri "$BaseUrl/v1/analyze/media" -Headers $reqHeaders -Body $ms.ToArray()
+}
 function Assert-Tier($Result, [string] $Expected, [string] $Name) {
     if ($Result.tier -ne $Expected) { throw "$Name expected $Expected, got $($Result.tier) severity=$($Result.severity)" }
     Write-Output "$Name PASS tier=$($Result.tier) severity=$($Result.severity) simulated=$($Result.simulated)"
@@ -84,9 +121,10 @@ for ($i = 0; $i -lt 5; $i++) {
 }
 Assert-Tier $b 'low' '7 healthy couple'
 
-$cf = Send-Event "cyberflasher-$run" "target-$run" 1300 $false $false 'cyberflashing'
+$cf = Send-Image "cyberflasher-$run" "target-$run" 1300 $benignPng 'cyberflashing'
 Assert-Tier $cf 'high' '3 cyberflashing'
 if ($cf.recommended_action -ne 'blur_media') { throw 'Cyberflashing did not blur media' }
+if (-not $cf.simulated) { throw 'Cyberflashing proxy must be labelled simulated' }
 
 $meme = Send-Event "meme-$run" "target-$run" 1310 $false $false 'I will kill you and your family'
 Assert-Tier $meme 'high' '4 screenshot meme'

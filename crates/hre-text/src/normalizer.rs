@@ -6,6 +6,15 @@ pub const MAX_TEXT_LENGTH_BYTES: usize = 32_768;
 /// Normalizes text by removing zero-width characters, normalizing homoglyphs,
 /// compressing repeated characters, and collapsing whitespace.
 pub fn normalize(input: &str) -> String {
+    normalize_with_repeats(input, true)
+}
+
+/// Canonicalize identifiers without folding repeated letters in their values.
+pub(crate) fn normalize_pii_input(input: &str) -> String {
+    normalize_with_repeats(input, false)
+}
+
+fn normalize_with_repeats(input: &str, fold_repeats: bool) -> String {
     if input.is_empty() {
         return String::new();
     }
@@ -38,7 +47,7 @@ pub fn normalize(input: &str) -> String {
 
         // Compress consecutive identical letters > 2 to at most 2 (leave digits unchanged)
         let lower = canon.to_ascii_lowercase();
-        if canon.is_alphabetic() && Some(lower) == prev_char {
+        if fold_repeats && canon.is_alphabetic() && Some(lower) == prev_char {
             repeat_count += 1;
             if repeat_count < 2 {
                 out.push(canon);

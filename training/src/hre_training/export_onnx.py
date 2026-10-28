@@ -1,9 +1,9 @@
 """ONNX model export contracts, metadata specifications, and parity verification.
 
 Card A2 deliverable:
-- Defines verified tensor input/output specifications, label ordering, and dynamic shapes.
+- Records unverified native candidate tensor specifications and proposed label orders.
 - Enforces license admission checks before export.
-- Provides numerical parity testing with fixed inputs against upstream reference outputs.
+- Provides numeric comparison only; upstream/runtime parity is not implemented.
 - Ensures offline fallback and explicit skips when model weights are not present.
 """
 
@@ -11,18 +11,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import copy
+import math
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Exact model contract specifications for text, sentiment, and embedding candidates
+# Unverified native candidate specifications; not deployment manifests.
 MODEL_SPECS: Dict[str, Dict[str, Any]] = {
     "unitary/unbiased-toxic-roberta": {
         "task": "toxicity_multilabel",
         "publisher": "unitary",
         "license": "Apache-2.0",
-        "license_cleared": True,
+        "license_cleared": False,
         "license_url": "https://huggingface.co/unitary/unbiased-toxic-roberta/raw/main/README.md",
         "labels": [
             "toxicity",
@@ -47,7 +49,7 @@ MODEL_SPECS: Dict[str, Dict[str, Any]] = {
         "task": "multilingual_toxicity_binary",
         "publisher": "unitary",
         "license": "Apache-2.0",
-        "license_cleared": True,
+        "license_cleared": False,
         "license_url": "https://huggingface.co/unitary/multilingual-toxic-xlm-roberta/raw/main/README.md",
         "labels": ["toxic"],
         "input_names": ["input_ids", "attention_mask"],
@@ -64,7 +66,7 @@ MODEL_SPECS: Dict[str, Dict[str, Any]] = {
         "task": "binary_toxicity_large",
         "publisher": "textdetox",
         "license": "openrail++",
-        "license_cleared": True,
+        "license_cleared": False,
         "license_url": "https://huggingface.co/textdetox/xlmr-large-toxicity-classifier-v2/raw/main/README.md",
         "labels": ["neutral", "toxic"],
         "input_names": ["input_ids", "attention_mask"],
@@ -98,7 +100,7 @@ MODEL_SPECS: Dict[str, Dict[str, Any]] = {
         "task": "embeddings",
         "publisher": "sentence-transformers",
         "license": "Apache-2.0",
-        "license_cleared": True,
+        "license_cleared": False,
         "license_url": "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         "labels": [],
         "input_names": ["input_ids", "attention_mask"],
@@ -130,13 +132,14 @@ def get_model_spec(model_id: str) -> Dict[str, Any]:
     """Retrieves contract specifications for a candidate model."""
     if model_id not in MODEL_SPECS:
         raise KeyError(f"Unknown model candidate: {model_id}. Admitted models: {list(MODEL_SPECS.keys())}")
-    return MODEL_SPECS[model_id]
+    return copy.deepcopy(MODEL_SPECS[model_id])
 
 
 def verify_license(model_id: str) -> bool:
     """Verifies that model license has been reviewed and cleared for export."""
     spec = get_model_spec(model_id)
-    if not spec.get("license_cleared", False):
+    # A URL or license identifier alone is not a reviewed, revision-pinned record.
+    if not spec.get("license_cleared", False) or not spec.get("license_review"):
         raise LicenseNotClearedError(
             f"Model '{model_id}' license is marked '{spec.get('license')}'. "
             f"Export blocked until official terms are verified and cleared."
@@ -147,6 +150,9 @@ def verify_license(model_id: str) -> bool:
 def check_dynamic_batch_shapes(spec: Dict[str, Any]) -> bool:
     """Verifies that all input and output tensors specify dynamic batch_size at axis 0."""
     dynamic_axes = spec.get("dynamic_axes", {})
+    tensors = spec.get("input_names", []) + spec.get("output_names", [])
+    if not tensors or set(tensors) != set(dynamic_axes):
+        return False
     for tensor_name, axes in dynamic_axes.items():
         if 0 not in axes or axes[0] != "batch_size":
             return False
@@ -164,31 +170,20 @@ def export_model_to_onnx(
     Enforces license verification and checks for local model weights.
     Returns export metadata without committing binary weights to git.
     """
-    spec = get_model_spec(model_id)
-
     # 1. License clearance gate
     verify_license(model_id)
 
     # 2. Check for local weights
-    target_dir = Path(output_dir)
-    safe_name = model_id.split("/")[-1]
-    onnx_file = target_dir / f"{safe_name}.onnx"
-
-    if weights_path is None or not Path(weights_path).exists():
+    if weights_path is None or not Path(weights_path).is_file():
         raise MissingArtifactError(
             f"Model weights for '{model_id}' not found at '{weights_path}'. "
             f"Cannot export without local PyTorch/Safetensors weights. "
             f"Candidate status remains Heuristic / Degraded."
         )
 
-    # In a full ML environment with torch/transformers, onnx.export would be invoked here.
-    return {
-        "model_id": model_id,
-        "onnx_path": str(onnx_file),
-        "status": "exported",
-        "labels": spec["labels"],
-        "dynamic_axes": spec["dynamic_axes"],
-    }
+    raise NotImplementedError(
+        "ONNX export and deployment adapter are not implemented; no artifact was written."
+    )
 
 
 def compare_numerical_parity(
@@ -200,13 +195,17 @@ def compare_numerical_parity(
 
     Returns (is_within_tolerance, max_absolute_diff).
     """
-    if len(reference_outputs) != len(onnx_outputs):
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ParityError("Tolerance must be finite and nonnegative")
+    if not reference_outputs or len(reference_outputs) != len(onnx_outputs):
         raise ParityError(
             f"Shape mismatch: reference has {len(reference_outputs)} elements, ONNX has {len(onnx_outputs)}"
         )
 
     max_diff = 0.0
     for r, o in zip(reference_outputs, onnx_outputs):
+        if not math.isfinite(r) or not math.isfinite(o):
+            raise ParityError("Parity requires finite reference and runtime outputs")
         diff = abs(r - o)
         if diff > max_diff:
             max_diff = diff

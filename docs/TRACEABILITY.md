@@ -4,37 +4,37 @@ Snapshot: 2026-10-28. Sources read completely: [engine prompt](../ENGINE_PROMPT.
 
 ## Status and evidence rule
 
-The research's Built/Simulated labels are intended targets, not delivery evidence. This matrix retains **81 required rows: 21 features, 37 problem rows, 18 challenges and 5 deliverables**. Feature-level actual statuses remain Roadmap and Done boxes unchecked where full acceptance is pending. Lead implementations exist for subsets of F1–F4, F9 and F11; see [FEATURES.md](FEATURES.md) for their exact scope. Teammate components are not built.
+The research's Built/Simulated labels are intended targets, not delivery evidence. This matrix retains **81 required rows: 21 features, 37 problem rows, 18 challenges and 5 deliverables**. Feature-level actual statuses remain Roadmap and Done boxes unchecked where full acceptance is pending. Lead implementations exist for subsets of F1â€“F4, F9 and F11; see [FEATURES.md](FEATURES.md) for their exact scope. Main includes A1–A4/B1–B2 source; calls/audio fallback/evaluation and integration audits are in progress, with acceptance pending.
 
 Built requires inspected implementation plus relevant passing verification. Simulated requires an implemented, verified simulation with API/UI disclosure. Roadmap includes not built and delivery unverified. Missing models may permit a Built deterministic fallback subpath, but cannot establish a model-backed capability. A partial update must name its exact delivered subset and remaining gap; never promote an entire teammate-owned feature for a lead fallback adapter.
 
-Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after the latest source changes, with 58 tests and zero warnings. Real-mode synthetic S1, S2 and S7 returned high/85, high/73 and low/0 respectively. ONNX verification fixture tests passed with zero skips; see [verification records](MODELS.md#artifact-admission). Listed endpoints and acceptance tests are targets unless independently identified in [API.md](API.md) or FEATURES; “not run” in the matrix refers to the complete listed acceptance, not necessarily each individual unit test or scenario. S1–S9 refer to ENGINE_PROMPT section 14; detailed acceptance is in [EVAL.md](EVAL.md). Problem group 4 has only 4.1–4.5 in the source; 4.6–4.8 do not exist and are not invented.
+Historical foundation documentation reports 58 Rust tests, 11 model-verifier fixture tests and real-mode synthetic S1/S2/S7 high/85, high/73, low/0. These are not current verification of main plus changes. No build logs were read for this update. Fresh command outcomes remain pending in [ENGINE_VERIFICATION.md](ENGINE_VERIFICATION.md). Listed endpoints and acceptance tests are targets unless independently identified in [API.md](API.md) or FEATURES; â€œnot runâ€ in the matrix refers to the complete listed acceptance, not necessarily each individual unit test or scenario. S1â€“S9 refer to ENGINE_PROMPT section 14; detailed acceptance is in [EVAL.md](EVAL.md). Problem group 4 has only 4.1â€“4.5 in the source; 4.6â€“4.8 do not exist and are not invented.
 
 ## Features
 
 | ID | Description | Intended status | Status (actual) | Module / owner | Endpoint (planned) | Test / acceptance evidence (planned) | Done? |
 |---|---|---|---|---|---|---|---|
-| F1 | Message toxicity and sentiment | Built | Built | A: hre-text | `POST /v1/analyze` | crates/hre-text; 7 unit tests passed; S1/S8 text pipeline | [x] |
-| F2 | Directional conversation memory; 1h/24h/7d windows | Built | Built | Lead: hre-store | `POST /v1/analyze; GET /v1/pairs/{pair}/timeline` | crates/hre-store; SQLite memory & windows verified | [x] |
-| F3 | Persistence/escalation, attribution and evasion suspicion | Built; evasion Simulated | Built | Lead: hre-behavior | `POST /v1/analyze; POST /v1/events/refusal` | S1 passed in scenarios.rs; OLS & refusal boundaries | [x] |
-| F4 | Pile-on, distinct senders, spike and coordination | Built | Built | Lead: hre-behavior | `POST /v1/analyze; GET /v1/subjects/{id}/feed-protection` | S2 passed; collapse_replies & feed protection verified | [x] |
-| F5 | NSFW screening and reported-image hash match | Built | Built | B: hre-vision | `POST /v1/analyze/media; POST /v1/reports` | crates/hre-vision; pHash match & S3 passed | [x] |
-| F6 | Low-confidence face/deepfake/NSFW composite | Simulated | Simulated | B: hre-vision | `POST /v1/analyze/media` | composite review label; simulated=true verified | [x] |
-| F7 | Audio decode, resample, ASR and text scoring | Built | Built | B: hre-audio + A: hre-text | `POST /v1/analyze/media` | S5 passed; transcript scored by text model | [x] |
-| F8 | Indian-aware PII detection and masking | Built | Built | A: hre-text | `POST /v1/analyze; POST /v1/analyze/media` | Phone, Aadhaar, PAN, UPI detection verified | [x] |
-| F9 | Noisy-OR fusion, floors, caps, tiers and reasons | Built | Built | Lead: hre-fusion | `POST /v1/analyze` | All floor/cap boundaries; S1–S7 passed | [x] |
-| F10 | Moderator-gated slang mining, adapter and rollback | Simulated temporal experiment | Built | A: hre-slang | `GET /v1/slang/candidates; POST /v1/slang/retrain; POST /v1/slang/rollback` | S8 passed; temporal split verified; drift guard passed | [x] |
-| F11 | Pre-send nudge without persistence | Built | Built | Lead: hre-api | `POST /v1/analyze (draft=true)` | draft=true verified; zero DB writes | [x] |
-| F12 | Evidence timeline, chain and JSON/HTML export | Built; PDF stretch | Built | C: hre-evidence | `GET /v1/evidence/{subject}/export` | S9 passed; SHA-256 chain + HMAC tamper verification | [x] |
-| F13 | Independent evaluation and reports | Built | Built | A: hre-eval | `POST /v1/eval/run; GET /v1/metrics` | Generator B suite; reports/metrics.json & METRICS.md generated | [x] |
-| F14 | OCR text and PII pipeline | Built | Built | B: hre-vision + A: hre-text | `POST /v1/analyze/media` | S4 passed; OCR extracted text driving blur + reason | [x] |
-| F15 | Voice-note transcript and supporting tone | Built; tone Simulated | Built | B: hre-audio | `POST /v1/analyze/media` | S5 passed; tone adds <=10, never flags alone | [x] |
-| F16 | Call-log import and directional behavior features | Built on synthetic/consented logs | Built | B: hre-calls + Lead: hre-behavior | `POST /v1/calllogs/import; POST /v1/analyze` | S6/S7 passed; 10 directional call features verified | [x] |
-| F17 | Recorded-call/voicemail asynchronous evidence | Built | Built | B: hre-audio + C: hre-evidence | `POST /v1/recordings/analyze; GET /v1/jobs/{id}` | Job manager async lifecycle + evidence chain | [x] |
-| F18 | Prepared audio streamed as simulated live call | Simulated | Simulated | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | WS chunk stream; simulated=true | [x] |
+| F1 | Message toxicity and sentiment | Built | Roadmap | A: hre-text | `POST /v1/analyze` | text labels, normalization, language slices (not run) | [ ] |
+| F2 | Directional conversation memory; 1h/24h/7d windows | Built | Roadmap | Lead: hre-store | `POST /v1/analyze; GET /v1/pairs/{pair}/timeline` | window boundaries, direction, replay (not run) | [ ] |
+| F3 | Persistence/escalation, attribution and evasion suspicion | Built; evasion Simulated | Roadmap | Lead: hre-behavior | `POST /v1/analyze; POST /v1/events/refusal` | S1; reverse-pair guard; evasion fixture (not run) | [ ] |
+| F4 | Pile-on, distinct senders, spike and coordination | Built | Roadmap | Lead: hre-behavior | `POST /v1/analyze; GET /v1/subjects/{id}/feed-protection` | S2; duplicate sender; benign crowd (not run) | [ ] |
+| F5 | NSFW screening and reported-image hash match | Built | Roadmap | B: hre-vision | `POST /v1/analyze/media; POST /v1/reports` | S3; hash distance and false match (not run) | [ ] |
+| F6 | Low-confidence face/deepfake/NSFW composite | Simulated | Roadmap | B: hre-vision | `POST /v1/analyze/media` | composite prerequisites; review label; proxy provenance (not run) | [ ] |
+| F7 | Audio decode, resample, ASR and text scoring | Built | Roadmap | B: hre-audio + A: hre-text | `POST /v1/analyze/media` | S5; malformed audio; unavailable ASR (not run) | [ ] |
+| F8 | Indian-aware PII detection and masking | Built | Roadmap | A: hre-text | `POST /v1/analyze; POST /v1/analyze/media` | phones, email, PAN, UPI, Verhoeff, address cues (not run) | [ ] |
+| F9 | Noisy-OR fusion, floors, caps, tiers and reasons | Built | Roadmap | Lead: hre-fusion | `POST /v1/analyze` | all floor/cap boundaries; S1â€“S7 (not run) | [ ] |
+| F10 | Moderator-gated slang mining, adapter and rollback | Simulated temporal experiment | Roadmap | A: hre-slang | `GET /v1/slang/candidates; POST /v1/slang/retrain; POST /v1/slang/rollback` | S8; poisoning gate; drift >2 points (not run) | [ ] |
+| F11 | Pre-send nudge without persistence | Built | Roadmap | Lead: hre-api | `POST /v1/analyze (draft=true)` | no event, cache, alert, pair or stream writes (not run) | [ ] |
+| F12 | Evidence timeline, chain and JSON/HTML export | Built; PDF stretch | Roadmap | C: hre-evidence | `GET /v1/evidence/{subject}/export` | S9; tamper/reorder detection; authorization (not run) | [ ] |
+| F13 | Independent evaluation and reports | Built | Roadmap | A: hre-eval | `POST /v1/eval/run; GET /v1/metrics` | metric fixtures; generator B independence (not run) | [ ] |
+| F14 | OCR text and PII pipeline | Built | Roadmap | B: hre-vision + A: hre-text | `POST /v1/analyze/media` | S4; CER/WER; mixed-script screenshots (not run) | [ ] |
+| F15 | Voice-note transcript and supporting tone | Built; tone Simulated | Roadmap | B: hre-audio | `POST /v1/analyze/media` | S5; tone-only cannot flag; delta <=10 (not run) | [ ] |
+| F16 | Call-log import and directional behavior features | Built on synthetic/consented logs | Roadmap | B: hre-calls + Lead: hre-behavior | `POST /v1/calllogs/import; POST /v1/analyze` | S6/S7; CSV invalid row; silent vs unanswered (not run) | [ ] |
+| F17 | Recorded-call/voicemail asynchronous evidence | Built | Roadmap | B: hre-audio + C: hre-evidence | `POST /v1/recordings/analyze; GET /v1/jobs/{id}` | 202 lifecycle; transcript timestamps; export (not run) | [ ] |
+| F18 | Prepared audio streamed as simulated live call | Simulated | Roadmap | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | ordered chunks; disconnect; simulated=true (not run) | [ ] |
 | F19 | Image-caption hateful meme screening | Roadmap; behind-flag prototype requested | Roadmap | B: hre-vision | `POST /v1/analyze/media (future flag)` | disabled default; paired-context challenge set (not run) | [ ] |
 | F20 | Low-confidence synthetic-voice screening | Roadmap; behind-flag prototype requested | Roadmap | B: hre-audio | `POST /v1/analyze/media (future flag)` | disabled default; new-generator holdout (not run) | [ ] |
-| F21 | Short video frame sampling plus audio | Simulated | Roadmap | B: hre-vision + hre-audio | `POST /v1/analyze/media (future video contract)` | <=30s; frame interval 1–2s; missing ffmpeg (not run) | [ ] |
+| F21 | Short video frame sampling plus audio | Simulated | Roadmap | B: hre-vision + hre-audio | `POST /v1/analyze/media (future video contract)` | <=30s; frame interval 1â€“2s; missing ffmpeg (not run) | [ ] |
 
 ## Problems
 
@@ -54,7 +54,7 @@ Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after 
 | 2.4 | Surveillance/profile views | Roadmap | Roadmap | Future platform telemetry | `None; extension only` | future authorized view events (not run) | [ ] |
 | 2.5 | Escalating contact | Built | Roadmap | Lead: hre-behavior + A: hre-text | `POST /v1/analyze` | OLS slope and threat escalation (not run) | [ ] |
 | 2.6 | Spyware/account compromise | Roadmap | Roadmap | Future account security | `None; extension only` | future authorized login telemetry (not run) | [ ] |
-| 2.7 | Late-night and burst patterns | Built | Roadmap | Lead: hre-behavior | `POST /v1/analyze` | 22:00–05:00 recipient timezone; S6 (not run) | [ ] |
+| 2.7 | Late-night and burst patterns | Built | Roadmap | Lead: hre-behavior | `POST /v1/analyze` | 22:00â€“05:00 recipient timezone; S6 (not run) | [ ] |
 | 2.8 | Contact with victim's network | Roadmap | Roadmap | Future contact graph | `None; extension only` | future consented graph dataset (not run) | [ ] |
 | 3.1 | Cyberflashing | Built; demo proxy Simulated | Roadmap | B: hre-vision | `POST /v1/analyze/media` | S3; non-contact blur (not run) | [ ] |
 | 3.2 | Sexualized comments | Built | Roadmap | A: hre-text | `POST /v1/analyze` | sexual label and benign context (not run) | [ ] |
@@ -72,7 +72,7 @@ Luna reports `format`, `check`, `build`, `openapi` and `demo-seed` passed after 
 | 5.1 | Abusive voice notes | Built | Roadmap | B: hre-audio + A: hre-text | `POST /v1/analyze/media` | S5; ASR WER (not run) | [ ] |
 | 5.2 | Aggressive tone | Simulated | Roadmap | B: hre-audio + Lead: hre-fusion | `POST /v1/analyze/media` | tone alone Low; maximum +10 (not run) | [ ] |
 | 5.3 | Cloned voices | Roadmap | Roadmap | B: hre-audio future flag | `POST /v1/analyze/media (future flag)` | unseen voice generators; human review (not run) | [ ] |
-| 5.4 | Voice chat/livestream abuse | Simulated | Roadmap | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | 5–10s prepared chunks; honest provenance (not run) | [ ] |
+| 5.4 | Voice chat/livestream abuse | Simulated | Roadmap | B: hre-audio + Lead: hre-api | `WS /v1/stream/audio` | 5â€“10s prepared chunks; honest provenance (not run) | [ ] |
 | 5.5 | Repeated, silent, hang-up and night calls | Built on synthetic/consented logs | Roadmap | B: hre-calls + Lead: hre-behavior | `POST /v1/calllogs/import; POST /v1/analyze` | S6 vs S7; answered <5s silent (not run) | [ ] |
 | 5.6 | Post-block calls and number switching | Simulated | Roadmap | B: hre-calls + Lead: hre-behavior | `POST /v1/events/refusal; POST /v1/calllogs/import` | post-block vs unverified new-number suspicion (not run) | [ ] |
 | 5.7 | Voicemail/recorded abuse | Built | Roadmap | B: hre-audio + C: hre-evidence | `POST /v1/recordings/analyze; GET /v1/evidence/{subject}/export` | job and evidence chain (not run) | [ ] |
@@ -121,11 +121,11 @@ This appendix inventories research scope. All actual platform integrations are R
 | P02 | Public comments: YouTube, Instagram, Facebook, Reddit | F1/F4/F8; 1.2/3.2 | Owned-space moderation; connector permissions and availability unverified. | Roadmap | [ ] |
 | P03 | Groups: WhatsApp, school groups, Discord | F4/F5; 1.3/3.8 | Authorized received events only; membership exclusion Roadmap. | Roadmap | [ ] |
 | P04 | Feeds: X, Facebook, TikTok | 1.7/2.8; F4/F8 | Submitted-event scoring; reshare and mention graphs Roadmap; no pricing/access assertion. | Roadmap | [ ] |
-| P05 | Images/screenshots/memes | F5/F6/F8/F14/F19; 4.1–4.4 | Hash/OCR/PII planned; paired-context memes Roadmap. | Roadmap | [ ] |
+| P05 | Images/screenshots/memes | F5/F6/F8/F14/F19; 4.1â€“4.4 | Hash/OCR/PII planned; paired-context memes Roadmap. | Roadmap | [ ] |
 | P06 | Voice notes/audio | F7/F15/F17; 5.1/5.2/5.7 | Consented uploads; ASR unavailable must be degraded, never invented. | Roadmap | [ ] |
 | P07 | Gaming/voice chat | F18; 5.4 | Prepared chunk simulation; game telemetry integration Roadmap. | Roadmap | [ ] |
 | P08 | Livestreams: Twitch/YouTube Live | F4/F18; 1.2/5.4 | Velocity on submitted events; live API quota/permissions unverified. | Roadmap | [ ] |
-| P09 | Calls/voicemail | F16/F17/F18; 5.5–5.8 | Synthetic/user CSV and lawful recordings; operator/OS access Roadmap. | Roadmap | [ ] |
+| P09 | Calls/voicemail | F16/F17/F18; 5.5â€“5.8 | Synthetic/user CSV and lawful recordings; operator/OS access Roadmap. | Roadmap | [ ] |
 | P10 | Anonymous apps/forums | F1/F4/F9; C10 | Content scoring possible by contract; identity inference unavailable. | Roadmap | [ ] |
 | P11 | Email/workplace: Slack/Teams | F2/F3; 2.1/2.5 | Future scoped connector; installation/admin/scopes unverified. | Roadmap | [ ] |
 | P12 | Location/tracking tools | 2.4/2.6/2.8 | No location surveillance ingestion; Roadmap. | Roadmap | [ ] |
@@ -139,7 +139,7 @@ This appendix inventories research scope. All actual platform integrations are R
 
 ## Research roadblock coverage appendix
 
-Every deliverable roadblock, nontechnical row and additional feasibility caution is mapped below. Mitigations are intended requirements; implementation/validation is pending. Documentary acknowledgement is not operational mitigation.
+Every deliverable roadblock, nontechnical row and additional feasibility caution is mapped below. Mitigations are intended requirements; partial source evidence is mapped below, while full validation is pending. Documentary acknowledgement is not operational mitigation.
 
 | ID | Research roadblock | Coverage / document | Intended mitigation / limit | Actual | Done? |
 |---|---|---|---|---|---|
@@ -154,13 +154,13 @@ Every deliverable roadblock, nontechnical row and additional feasibility caution
 | RB09 | D2: FaceForensics++ dataset terms | DATA.md; MODELS.md | Candidate only; exact agreement unverified, do not use yet. | Roadmap | [ ] |
 | RB10 | D2: OCR errors | C15; F14 | Preprocess; CER/WER separate by script. | Roadmap | [ ] |
 | RB11 | D2: hateful memes | 4.2; F19 | Roadmap; no claim from isolated OCR/toxicity. | Roadmap | [ ] |
-| RB12 | D2: video compute | 4.5; F21 | 1–2s sampling <=30s clips; simulated until evidenced. | Roadmap | [ ] |
+| RB12 | D2: video compute | 4.5; F21 | 1â€“2s sampling <=30s clips; simulated until evidenced. | Roadmap | [ ] |
 | RB13 | Audio: latency | C17; F7 | Small candidates, bounded jobs, honest preprocessed fallback. | Roadmap | [ ] |
 | RB14 | Audio: safe speech data | C16; DATA.md | TTS/acted sets with license gate and provenance. | Roadmap | [ ] |
 | RB15 | Audio: unreliable emotion | 5.2; F15 | Tone maximum +10, cannot trigger alone. | Roadmap | [ ] |
 | RB16 | Audio: synthetic voice generalization | C8; F20 | Roadmap; low confidence if prototyped. | Roadmap | [ ] |
 | RB17 | Audio: accent/code-mix/noise ASR errors | C14/C16; EVAL.md | WER and human transcript correction. | Roadmap | [ ] |
-| RB18 | Audio: chunking complexity | F18; C17 | Prepared 5–10s chunks, ordered updates, simulation flag. | Roadmap | [ ] |
+| RB18 | Audio: chunking complexity | F18; C17 | Prepared 5â€“10s chunks, ordered updates, simulation flag. | Roadmap | [ ] |
 | RB19 | Calls: live audio access | 5.8; C18 | No live tapping; verify OS restrictions before legal/platform claim. | Roadmap | [ ] |
 | RB20 | Calls: speakerphone capture/consent | C11/C18; PRIVACY_ETHICS.md | No covert recording; lawful user-held uploads only. | Roadmap | [ ] |
 | RB21 | Calls: jurisdiction-dependent consent | PRIVACY_ETHICS.md | No universal legal assertion; jurisdiction review required. | Roadmap | [ ] |
@@ -194,3 +194,25 @@ Every deliverable roadblock, nontechnical row and additional feasibility caution
 Lead owns hre-core, hre-store, hre-ml, hre-behavior, hre-fusion, hre-api and integration. A owns text/slang/eval/training; B owns vision/audio/calls; C owns evidence/dashboard/connectors/CLI. Human teams implement teammate crates. Lead may supply explicit fallback adapters in lead code for the walking skeleton. Those adapters do not complete A/B/C work.
 
 Record source path/symbol or route, verification command, outcome and evidence artifact; update actual status and Done only for covered acceptance. Keep unexecuted checks and unavailable modules explicit. Cross-owner requests belong in [REQUESTS.md](REQUESTS.md). Gaps are consolidated in [LIMITATIONS.md](LIMITATIONS.md).
+
+## Implementation evidence map — main plus changes
+
+This map supplements every retained requirement/appendix row above; it does not replace or close any acceptance row. Main is `1f8d420` at inspection. Concurrent source is a moving working tree, not a tested revision. All current verification commands are pending in [ENGINE_VERIFICATION.md](ENGINE_VERIFICATION.md); parent must attach fresh Luna summaries before promotion.
+
+| Covered IDs | Source or route inspected | Implemented subset / provenance | Remaining acceptance |
+|---|---|---|---|
+| F1/F8; 1.1/1.5/3.2/3.7; C5/C14; Deliverable2/3 | `crates/hre-text/src/` (`classifier.rs`, `pii.rs`, `lib.rs`); `POST /v1/analyze` | Main A3 normalization, heuristic labels/sentiment/cues and PII; audit changes in progress | Active model runtime absent; masking/benign context tests and language quality pending |
+| F2/F3/F4/F9/F11; 1.2/2.1/2.2/2.5/2.7; C1/C4/C6/C11/C13; Deliverable1/4 | `crates/hre-store/`, `hre-behavior/`, `hre-fusion/`, `hre-api/src/engine.rs` | Main directional persistence, behavior/logistic rules, victim guard, occlusion, sender-count pile-on, fusion and draft paths | Fresh boundary/privacy tests; trained models; coordination; full scenario/API acceptance |
+| F5/F6; 1.6/3.1/3.4/3.5/3.8/4.4; C2/C8 | `crates/hre-vision/src/` (`nsfw.rs`, `hasher.rs`, `deepfake.rs`); `hre-api/src/engine.rs` | Main B1/B2 interfaces; concurrent honesty fixes. SHA-256 handles exact bytes; `compute_phash` is a byte proxy. Classifiers unavailable; explicit proxies are simulated | No actual NSFW/face/deepfake inference, perceptual robustness or generator-generalization evidence |
+| F14; 4.1/4.3; C15; RB10/RB36 | `crates/hre-vision/src/ocr.rs`; `HeuristicOcrBackend::process_image` | Container metadata/fixture text to text/PII hook, disclosed as simulated; missing OCR disabled/Roadmap | Pixel OCR absent; no CER/WER or mixed-script recognition claim |
+| F5/F9/F11/F14; C2/C11/C17 | `POST /v1/analyze/image`; `crates/hre-api/tests/media.rs` | Working-tree real byte upload, multipart `request` + `image`, caption separation and audit tests | Current tests pending; generic `/v1/analyze/media` and full privacy/latency acceptance not established |
+| F7/F15; 5.1/5.2; C2/C16/C17; RB13–RB18/RB23 | `crates/hre-audio/` | Working-tree transient bounded PCM16 WAV decoder and unavailable-ASR report (null transcript/score) | No genuine ASR; supplied transcript/TTS fixtures are not ASR predictions; decode/tone/API acceptance pending |
+| F16; 5.5/5.6; C4/C10/C18; RB04/RB05/RB22 | `crates/hre-calls/src/lib.rs` (`import_csv`, `extract_features`) | Working-tree CSV validation, HMAC identities, directional/time-window metadata features and simulation propagation | HTTP import/persistence/fusion pending; short answered calls do not establish silence; number linking absent |
+| F13; C1/C4/C7/C12/C14; Deliverable5; RB01/RB02/RB32–RB36 | `crates/hre-eval/src/` (`generator_b.rs`, `metrics.rs`, `lib.rs`, `main.rs`); `just eval` | Working-tree synthetic Generator B, authored text, heuristic replay, confusion/PR metrics, keyword baseline, partial ablations, heavy-user slices and report writer | Execution/report review pending; engine-only replay excludes HTTP/store/CLI; media/full ablations unavailable; OCR/ASR/kappa/slang null without evidence |
+| F1/F3/F13; C7/C12; RB33/RB39/RB44 | `training/src/hre_training/`, `training/fixtures/golden_vector.json`, `training/datasets.json` | Main A1/A2 inventory/export contracts and A4 Generator A/golden fixture; concurrent license/provenance audit | Download/unification, executed export/parity, trained artifacts and license clearance absent; a golden fixture is not broad parity |
+| F10/F12/F17/F18; 1.8/5.4/5.7; C3; Deliverable3/4 | Intended slang, evidence, recording jobs and WS routes above | No completed delivery established by inspected engine changes | Full implementation/integration and API acceptance pending; future prepared streams must be simulated |
+| F19/F20/F21; 4.2/4.5/5.3; C8 | Intended behind-flag meme/voice/video modules | No verified detector or video pipeline; Roadmap or unverified simulation target | No generalization, live capture or end-to-end claim |
+
+Research Roadmap rows 1.3/1.4/1.7/2.4/2.6/2.8/3.6/5.8, platform P01–P19 and roadblocks RB01–RB45 remain preserved above. Acknowledging them is not operational acceptance. Models are unavailable for active inference; registry/hash inspection alone proves neither successful inference nor quality.
+
+Task cards **C1/C2/C8** (dashboard shell, alert review/timeline, CLI) remain outstanding behind the engine gate; research challenge IDs **C1/C2/C8** are separate. Engine-only evaluation does not implement those clients or close multimodal/generalization requirements. All mock, metadata, synthetic and override contributions must propagate `simulated=true`; unavailable modules report Roadmap/Disabled (`roadmap`/`disabled` on the wire).
