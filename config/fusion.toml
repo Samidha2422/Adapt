@@ -1,0 +1,21 @@
+[thresholds]
+review = 31
+high = 61
+urgent = 86
+
+[weights]
+text = 0.8
+ocr = 0.8
+image = 0.85
+audio = 0.0
+call = 0.8
+behavior = 0.85
+pile_on = 0.85
+pii = 0.4
+
+[floors]
+threat = 86
+contact_after_refusal = 61
+repeated_after_refusal = 75
+unsolicited_explicit = 61
+reported_hash_match = 86

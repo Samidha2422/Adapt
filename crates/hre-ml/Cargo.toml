@@ -1,0 +1,14 @@
+[package]
+name = "hre-ml"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hre-core = { path = "../hre-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

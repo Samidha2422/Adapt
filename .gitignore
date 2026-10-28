@@ -1,0 +1,15 @@
+/target/
+/models/
+/data/*
+!/data/test/
+/data/test/*
+!/data/test/scenarios/
+/.env
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+.venv/
+*.onnx
+*.ggml
+*.safetensors

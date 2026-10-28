@@ -1,0 +1,19 @@
+[package]
+name = "hre-fusion"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hre-core = { path = "../hre-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "fusion"
+harness = false

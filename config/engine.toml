@@ -1,0 +1,9 @@
+bind = "127.0.0.1:8080"
+database_url = "sqlite://target/hre.db?mode=rwc"
+models_dir = "models"
+demo_mode = false
+retain_media = false
+night_timezone = "Asia/Kolkata"
+night_start_hour = 22
+night_end_hour = 5
+intra_threads = 2

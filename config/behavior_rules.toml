@@ -1,0 +1,7 @@
+# Deterministic fallback; synthetic evaluation cannot establish field accuracy.
+unreplied_review_count = 20
+unreplied_high_count = 60
+pile_on_senders = 10
+pile_on_window_seconds = 60
+reciprocity_protective_ratio = 0.4
+reverse_harassment_guard_count = 20

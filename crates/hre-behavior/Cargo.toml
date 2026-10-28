@@ -1,0 +1,21 @@
+[package]
+name = "hre-behavior"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hre-core = { path = "../hre-core" }
+hre-store = { path = "../hre-store" }
+hre-ml = { path = "../hre-ml" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "features"
+harness = false

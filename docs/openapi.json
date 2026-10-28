@@ -1,0 +1,1074 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Harassment Risk Engine",
+    "description": "",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/admin/demo/reset": {
+      "post": {
+        "tags": [],
+        "operationId": "reset",
+        "responses": {
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/alerts": {
+      "get": {
+        "tags": [],
+        "operationId": "alert_list",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnalyzeResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/analyze": {
+      "post": {
+        "tags": [],
+        "operationId": "analyze",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/events/refusal": {
+      "post": {
+        "tags": [],
+        "operationId": "refusal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefusalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "tags": [],
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/health/models": {
+      "get": {
+        "tags": [],
+        "operationId": "health_models",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ModelHealth"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/stream/alerts": {
+      "get": {
+        "tags": [],
+        "operationId": "stream_alerts",
+        "responses": {
+          "200": {
+            "description": "SSE alert and resync events",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/subjects/{id}/feed-protection": {
+      "get": {
+        "tags": [],
+        "operationId": "feed_protection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "HMAC subject ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedProtection"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Action": {
+        "type": "string",
+        "enum": [
+          "log",
+          "warn_sender",
+          "blur_media",
+          "throttle",
+          "escalate"
+        ]
+      },
+      "AnalyzeRequest": {
+        "type": "object",
+        "description": "Client envelope. Raw identities must be pseudonymized before storage.",
+        "required": [
+          "event_id",
+          "kind",
+          "occurred_at",
+          "sender_id",
+          "recipient_id",
+          "platform",
+          "channel"
+        ],
+        "properties": {
+          "call": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Call"
+              }
+            ]
+          },
+          "channel": {
+            "$ref": "#/components/schemas/Channel"
+          },
+          "context": {
+            "$ref": "#/components/schemas/EventContext"
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EventKind"
+          },
+          "media": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Media"
+              }
+            ]
+          },
+          "message": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Message"
+              }
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "recipient_id": {
+            "type": "string"
+          },
+          "sender_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AnalyzeResponse": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "severity",
+          "tier",
+          "reasons",
+          "signals",
+          "recommended_action",
+          "secondary_actions",
+          "latency_ms",
+          "model_versions",
+          "simulated",
+          "degraded"
+        ],
+        "properties": {
+          "alert_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "degraded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model_versions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "nudge": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Nudge"
+              }
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Reason"
+            }
+          },
+          "recommended_action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "secondary_actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecondaryAction"
+            }
+          },
+          "severity": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 100,
+            "minimum": 0
+          },
+          "signals": {
+            "$ref": "#/components/schemas/Signals"
+          },
+          "simulated": {
+            "type": "boolean"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/Tier"
+          }
+        }
+      },
+      "Backend": {
+        "type": "string",
+        "enum": [
+          "onnx",
+          "heuristic",
+          "disabled",
+          "ggml"
+        ]
+      },
+      "Call": {
+        "type": "object",
+        "required": [
+          "direction",
+          "duration_s",
+          "answered"
+        ],
+        "properties": {
+          "answered": {
+            "type": "boolean"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/CallDirection"
+          },
+          "duration_s": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "voicemail": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CallDirection": {
+        "type": "string",
+        "enum": [
+          "incoming",
+          "outgoing"
+        ]
+      },
+      "Channel": {
+        "type": "object",
+        "required": [
+          "type",
+          "conversation_id"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "post_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/ChannelType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChannelType": {
+        "type": "string",
+        "enum": [
+          "dm",
+          "group",
+          "comment",
+          "livestream",
+          "voice",
+          "call"
+        ]
+      },
+      "EventContext": {
+        "type": "object",
+        "properties": {
+          "is_contact": {
+            "type": "boolean",
+            "default": false
+          },
+          "language_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "recipient_blocked_sender": {
+            "type": "boolean",
+            "default": false
+          },
+          "recipient_is_minor": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "recipient_muted_sender": {
+            "type": "boolean",
+            "default": false
+          },
+          "reply_to_event_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "default": null
+          },
+          "sender_account_age_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "default": null,
+            "minimum": 0
+          },
+          "stop_requested": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "EventKind": {
+        "type": "string",
+        "enum": [
+          "message",
+          "image",
+          "audio",
+          "call_event"
+        ]
+      },
+      "FeedProtection": {
+        "type": "object",
+        "required": [
+          "subject_id",
+          "enabled",
+          "actions"
+        ],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecondaryAction"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "subject_id": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "mock",
+          "degraded"
+        ],
+        "properties": {
+          "degraded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mock": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "Media": {
+        "type": "object",
+        "required": [
+          "mime"
+        ],
+        "properties": {
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ModelHealth": {
+        "type": "object",
+        "description": "Model integrity is separate from runnable inference availability.",
+        "required": [
+          "name",
+          "hash_verified",
+          "backend",
+          "degraded"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/Backend"
+          },
+          "degraded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hash_verified": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Nudge": {
+        "type": "object",
+        "required": [
+          "text",
+          "rewrite_hint"
+        ],
+        "properties": {
+          "rewrite_hint": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "Reason": {
+        "type": "object",
+        "required": [
+          "code",
+          "text",
+          "weight",
+          "evidence"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "RefusalKind": {
+        "type": "string",
+        "enum": [
+          "block",
+          "unblock",
+          "mute",
+          "stop_request"
+        ]
+      },
+      "RefusalRequest": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "sender_id",
+          "recipient_id",
+          "occurred_at",
+          "kind",
+          "platform"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RefusalKind"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "recipient_id": {
+            "type": "string"
+          },
+          "sender_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ReportRequest": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "reason"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ReviewDecision": {
+        "type": "string",
+        "enum": [
+          "confirm",
+          "reject",
+          "escalate"
+        ]
+      },
+      "ReviewRequest": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ReviewDecision"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SecondaryAction": {
+        "type": "string",
+        "enum": [
+          "alert_moderator",
+          "collapse_replies",
+          "rate_limit",
+          "needs_human_review",
+          "show_transcript"
+        ]
+      },
+      "Signal": {
+        "type": "object",
+        "required": [
+          "score",
+          "label",
+          "status",
+          "backend",
+          "confidence",
+          "details"
+        ],
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/Backend"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "label": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          }
+        }
+      },
+      "Signals": {
+        "type": "object",
+        "required": [
+          "text",
+          "ocr",
+          "image",
+          "audio",
+          "call",
+          "behavior",
+          "pile_on",
+          "pii"
+        ],
+        "properties": {
+          "audio": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "behavior": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "call": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "image": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "ocr": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "pii": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "pile_on": {
+            "$ref": "#/components/schemas/Signal"
+          },
+          "text": {
+            "$ref": "#/components/schemas/Signal"
+          }
+        }
+      },
+      "Status": {
+        "type": "string",
+        "enum": [
+          "built",
+          "simulated",
+          "roadmap"
+        ]
+      },
+      "Tier": {
+        "type": "string",
+        "enum": [
+          "low",
+          "review",
+          "high",
+          "urgent"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      },
+      "moderator": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
