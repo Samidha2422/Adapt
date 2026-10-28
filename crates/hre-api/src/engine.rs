@@ -21,11 +21,13 @@ pub(crate) struct Engine {
     pub(crate) slang_lexicon: hre_slang::SlangLexicon,
     pub(crate) slang_miner: hre_slang::CandidateMiner,
     pub(crate) slang_adapter: hre_slang::AdapterManager,
+    pub(crate) text_backend: std::sync::Arc<dyn hre_text::TextBackend>,
+    pub(crate) onnx_behavior: Option<std::sync::Arc<hre_ml::OnnxBehaviorModel>>,
 }
 impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
         let models_dir = config.models_dir.clone();
-        let (mut behavior, fusion, registry) =
+        let (mut behavior, fusion, registry, text_backend, onnx_behavior) =
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let behavior = match std::fs::read_to_string("config/behavior_rules.toml") {
                     Ok(text) => hre_behavior::BehaviorConfig::parse(&text)?,
@@ -41,10 +43,50 @@ impl Engine {
                     }
                     Err(e) => return Err(e.into()),
                 };
+                let models_path = std::path::Path::new(&models_dir);
+                let manifest = std::fs::read_to_string(models_path.join("manifest.json"))
+                    .ok()
+                    .and_then(|j| hre_ml::ModelManifest::parse(&j).ok());
+                let text_thresholds = manifest
+                    .as_ref()
+                    .and_then(|m| {
+                        m.models
+                            .iter()
+                            .find(|entry| entry.task == "text_fine_tuned")
+                    })
+                    .map(|entry| entry.thresholds.clone())
+                    .unwrap_or_default();
+
+                let text_backend: std::sync::Arc<dyn hre_text::TextBackend> =
+                    match hre_ml::OnnxTextBackend::load_from_dir(models_path, text_thresholds) {
+                        Ok(b) => std::sync::Arc::new(b),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load ONNX text model ({e}); using heuristic backend"
+                            );
+                            std::sync::Arc::new(hre_text::HeuristicTextBackend)
+                        }
+                    };
+
+                let onnx_behavior = match hre_ml::OnnxBehaviorModel::load(
+                    &models_path.join("behavior_msg.onnx"),
+                    47,
+                ) {
+                    Ok(m) => Some(std::sync::Arc::new(m)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load ONNX behavior model ({e}); using logistic fallback"
+                        );
+                        None
+                    }
+                };
+
                 Ok((
                     behavior,
                     fusion,
-                    hre_ml::ModelRegistry::load(std::path::Path::new(&models_dir)),
+                    hre_ml::ModelRegistry::load(models_path),
+                    text_backend,
+                    onnx_behavior,
                 ))
             })
             .await??;
@@ -90,6 +132,8 @@ impl Engine {
             slang_lexicon,
             slang_miner,
             slang_adapter,
+            text_backend,
+            onnx_behavior,
         })
     }
     pub async fn analyze(
@@ -166,6 +210,7 @@ impl Engine {
         let envelope = request.clone();
         let image = self.image.clone();
         let ocr = self.ocr.clone();
+        let text_backend = self.text_backend.clone();
         let (mut text_report, image_analysis, ocr_report) =
             tokio::task::spawn_blocking(move || {
                 let text = envelope
@@ -175,7 +220,7 @@ impl Engine {
                     .or_else(|| envelope.media.as_ref().and_then(|m| m.caption.as_deref()));
                 let text_report = text
                     .filter(|s| !s.trim().is_empty())
-                    .map(hre_text::analyze)
+                    .map(|s| text_backend.analyze(s))
                     .transpose()
                     .map_err(|_| {
                         ApiError::new(
@@ -389,6 +434,7 @@ impl Engine {
         let behavior_config = self.behavior.clone();
         let fusion_config = self.fusion.clone();
         let registry = self.registry.clone();
+        let onnx_behavior = self.onnx_behavior.clone();
         let call_config = hre_calls::CallFeatureConfig {
             night_start_hour: self.behavior.night_start_hour,
             night_end_hour: self.behavior.night_end_hour,
@@ -413,6 +459,7 @@ impl Engine {
                 &registry,
                 &call_config,
                 voicemail,
+                onnx_behavior.as_deref(),
             )
         })
         .await
@@ -472,13 +519,16 @@ impl Engine {
         registry: &hre_ml::ModelRegistry,
         call_config: &hre_calls::CallFeatureConfig,
         voicemail: bool,
+        onnx_behavior: Option<&hre_ml::OnnxBehaviorModel>,
     ) -> AnalyzeResponse {
-        let behavior = hre_behavior::analyze(
+        let behavior_backend = onnx_behavior.map(|b| b as &dyn hre_ml::InferenceBackend);
+        let behavior = hre_behavior::analyze_with_backend(
             events,
             &event.sender,
             &event.recipient,
             event.timestamp_ms,
             behavior_config,
+            behavior_backend,
         );
         let calls: Vec<_> = events
             .iter()

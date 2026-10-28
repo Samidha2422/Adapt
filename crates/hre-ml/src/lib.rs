@@ -1,4 +1,7 @@
-//! Model manifest verification and honest fallback selection. No inference runtime is linked.
+//! Model manifest verification, honest fallback selection, and ONNX Runtime inference.
+pub mod onnx;
+pub use onnx::{OnnxBehaviorModel, OnnxTextBackend, OnnxTextModel, TEXT_MODEL_LABELS};
+
 use hre_core::Backend;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

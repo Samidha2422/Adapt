@@ -442,13 +442,14 @@ pub fn occlusion_attribution(f: &Features, c: &BehaviorConfig, top_k: usize) -> 
     deltas.truncate(top_k);
     deltas
 }
-/// Analyze both directional histories plus target-wide events. Pass the pending event exactly once.
-pub fn analyze(
+/// Analyze both directional histories plus target-wide events with an optional inference backend.
+pub fn analyze_with_backend(
     events: &[StoredEvent],
     sender: &str,
     recipient: &str,
     now_ms: i64,
     config: &BehaviorConfig,
+    backend: Option<&dyn InferenceBackend>,
 ) -> BehaviorReport {
     // Invalid programmatic configs degrade to the documented safe defaults, never panic.
     let defaults = BehaviorConfig::default();
@@ -508,7 +509,21 @@ pub fn analyze(
         || long_answered_calls)
         && after == 0
         && features.get("since_refusal_hours") < 0.0;
-    let mut score = probability(&features, c);
+    let mut onnx_active = false;
+    let base_prob = if let Some(b) = backend {
+        match b.predict(&features.vector()) {
+            Ok(p) => {
+                if b.backend() == Backend::Onnx {
+                    onnx_active = true;
+                }
+                p
+            }
+            Err(_) => probability(&features, c),
+        }
+    } else {
+        probability(&features, c)
+    };
+    let mut score = base_prob;
     let streak = features.get("unreplied_streak") as usize;
     if streak >= c.unreplied_high_count {
         score = score.max(0.85);
@@ -544,9 +559,32 @@ pub fn analyze(
     let simulated = events
         .iter()
         .any(|e| e.simulated && recent(e, now_ms, 7 * DAY));
-    let signal = |score, label: &str| Signal {
+    let mut behavior = Signal {
         score,
-        label: label.into(),
+        label: if onnx_active {
+            "onnx_behavior_model".into()
+        } else {
+            "deterministic_behavior_rules".into()
+        },
+        status: if simulated {
+            Status::Simulated
+        } else {
+            Status::Built
+        },
+        backend: if onnx_active {
+            Backend::Onnx
+        } else {
+            Backend::Heuristic
+        },
+        confidence: if onnx_active { 0.85 } else { 0.6 },
+        details: BTreeMap::new(),
+    };
+    behavior
+        .details
+        .insert("features".into(), serde_json::json!(features));
+    let mut pile_on = Signal {
+        score: if feed_protection { 0.85 } else { 0.0 },
+        label: "distinct_senders_window".into(),
         status: if simulated {
             Status::Simulated
         } else {
@@ -556,14 +594,6 @@ pub fn analyze(
         confidence: 0.6,
         details: BTreeMap::new(),
     };
-    let mut behavior = signal(score, "deterministic_behavior_rules");
-    behavior
-        .details
-        .insert("features".into(), serde_json::json!(features));
-    let mut pile_on = signal(
-        if feed_protection { 0.85 } else { 0.0 },
-        "distinct_senders_window",
-    );
     pile_on
         .details
         .insert("distinct_senders".into(), serde_json::json!(accounts));
@@ -611,11 +641,12 @@ pub fn analyze(
             0.85,
         ));
     }
-    let mut degraded = vec![
-        "behavior_msg.onnx_missing".into(),
-        "behavior.evasion_similarity_unavailable".into(),
-        "pile_on.ewma_baseline_unavailable".into(),
-    ];
+    let mut degraded = Vec::new();
+    if !onnx_active {
+        degraded.push("behavior_msg.onnx_missing".into());
+    }
+    degraded.push("behavior.evasion_similarity_unavailable".into());
+    degraded.push("pile_on.ewma_baseline_unavailable".into());
     if config.validate().is_err() {
         degraded.push("behavior.invalid_config_defaults_used".into());
     }
@@ -632,4 +663,15 @@ pub fn analyze(
         simulated,
         degraded,
     }
+}
+
+/// Analyze both directional histories plus target-wide events. Pass the pending event exactly once.
+pub fn analyze(
+    events: &[StoredEvent],
+    sender: &str,
+    recipient: &str,
+    now_ms: i64,
+    config: &BehaviorConfig,
+) -> BehaviorReport {
+    analyze_with_backend(events, sender, recipient, now_ms, config, None)
 }
