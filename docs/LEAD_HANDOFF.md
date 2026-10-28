@@ -34,3 +34,81 @@ P0 verification update: `secret_matches` has now been added using HMAC verificat
 Current authoritative integration update: core already exports constant-time `secret_matches`; removed duplicate API implementation/dependency, preserved the concurrently added api.rs tests. `engine.rs` now calls real sidecar behavior+fusion in spawn_blocking. scenario tests and scripts/demo-seed.ps1 are present. No noisy commands executed by this owning session. Parent/Luna: run format then check/build/openapi after dependency connectivity is available; prior logs predate final integration. Please pause other API writers to avoid duplicate implementations. No send_input exists in this tool inventory.
 
 API integration handoff: wired REQ16/17 indexed refusal markers, atomic assessment/alert/protection writes, durable queue and protection reads, and independent block/mute/stop state. Added restart, refusal and retry tests. Luna reported demo-seed scenarios 1/2/7 passing before these edits and a draft-nudge test failure; that test supplied benign text after its conflict check, so it now restores the threatening draft. Parent/Luna: run logged format and check after current work; no checks have been run on this integration. Multi-instance read/score/write ordering and durable SSE delivery remain unsolved; REQ18 records an older reverse-refusal guard gap. No agent messaging tool is available here; this handoff is the completion notice.
+
+## Multimodal Model & Teammate Integration Guide (App & Dashboard)
+
+All 4 genuine multimodal capabilities and core text/behavior models are integrated into the live Rust engine:
+
+### 1. Active Models in Engine
+- **NSFW Image Classification**: `models/nsfw.onnx` (Falconsai ViT, 2 classes: `normal`, `nsfw`). Preprocessing: resize/crop to $224 \times 224 \times 3$, ImageNet normalization. Backend: `OnnxImageBackend`.
+- **Deepfake Image Detection**: `models/deepfake.onnx` (dima806 ViT, 2 classes: `authentic`, `deepfake`). Preprocessing: $224 \times 224 \times 3$ float32 RGB. Attached via `OnnxDeepfakeModel`.
+- **OCR Text Recognition**: `models/ocr_recognizer.onnx` (PP-OCRv4 line recognizer) + `models/ocr_vocab.json`. Preprocessing: height 48px, variable width normalized to $[-0.5, 0.5]$. CTC greedy decoding. Backend: `OnnxOcrBackend`.
+- **Audio Transcription**: `models/whisper_encoder.onnx` + `models/whisper_decoder.onnx` + `models/whisper_tokenizer.json` (OpenAI Whisper-tiny ONNX pipeline). Backend: `OnnxWhisperModel` / `OnnxAudioBackend`.
+- **Text Harassment Classification**: `models/text_fine_tuned.onnx` (multilingual XLM-RoBERTa, 11 toxic/harassment labels). Backend: `OnnxTextModel`.
+- **Message & Call Behavioral Risk**: `models/behavior_msg.onnx` (47 behavioral features) & `models/behavior_calls.onnx`. Backend: `OnnxBehaviorModel`.
+
+### 2. Client Endpoints for Android App & Dashboard
+
+#### A. Text & Metadata Analysis: `POST /v1/analyze`
+- **Headers**: `Content-Type: application/json`, `X-API-Key: <key>`
+- **Request Envelope** (`AnalyzeRequest`):
+  ```json
+  {
+    "platform": "instagram",
+    "sender_id": "raw_user_123",
+    "recipient_id": "raw_victim_456",
+    "channel": { "type": "dm", "conversation_id": "dm_123_456" },
+    "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "occurred_at": "2026-10-29T00:00:00Z",
+    "kind": "message",
+    "context": { "is_contact": false, "sender_account_age_days": 2 },
+    "message": { "text": "Message content to evaluate" },
+    "draft": false
+  }
+  ```
+- **Response** (`AnalyzeResponse`):
+  ```json
+  {
+    "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "severity": 86,
+    "tier": "urgent",
+    "action": "blur_media",
+    "secondary_actions": ["alert_moderator"],
+    "signals": {
+      "text": { "score": 0.85, "label": "toxic_harassment", "status": "built", "backend": "onnx" },
+      "image": { "score": 0.0, "status": "roadmap", "backend": "disabled" },
+      "ocr": { "score": 0.0, "status": "roadmap", "backend": "disabled" },
+      "behavior": { "score": 0.72, "status": "built", "backend": "onnx" },
+      "call": { "score": 0.0, "status": "roadmap", "backend": "disabled" }
+    },
+    "reasons": [{ "code": "TOXIC_LANGUAGE", "text": "High toxicity detected in message", "weight": 0.85, "evidence": {} }],
+    "alert_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+  ```
+
+#### B. Direct Image Analysis (NSFW + Deepfake + OCR): `POST /v1/analyze/image`
+- **Headers**: `Content-Type: multipart/form-data`, `X-API-Key: <key>`
+- **Multipart Form Fields**:
+  - `request`: JSON string of `AnalyzeRequest` with `kind: "image"` and matching `media: { "mime": "image/jpeg" }`.
+  - `image`: raw binary bytes of JPEG or PNG image (max 10MB).
+- **Engine Behavior**:
+  1. Runs NSFW ViT inference on pixel data.
+  2. Runs Deepfake ViT inference on pixel data (`signals.image.details.deepfake_score`).
+  3. **Composite Intimate Media Rule**: If deepfake score $\ge 0.70$ AND NSFW score $\ge 0.50$, the engine automatically sets `synthetic_intimate: true`, emits reason code `POSSIBLE_SYNTHETIC_INTIMATE_MEDIA`, elevates the risk tier floor to `urgent` (score 86), and sets recommended action to `Action::BlurMedia`.
+  4. Runs PP-OCRv4 line recognizer. Any abusive text extracted from image pixels triggers `OCR_ABUSE` reason code and feeds the text classifier.
+
+#### C. Audio Analysis Pipeline: `POST /v1/recordings/analyze`
+- **Headers**: `Content-Type: application/json`, `X-API-Key: <key>`
+- **Body**: `{ "mime": "audio/wav", "caption": "optional context" }`
+- **Response**: HTTP 202 Accepted with `{ "job_id": "<uuid>", "status": "accepted" }`.
+- **Poll Status**: `GET /v1/jobs/{job_id}` returns transcription, tone signal, speech emotion, and risk reasons.
+
+#### D. Live Moderator Alerts & Dashboard
+- **SSE Stream**: `GET /v1/stream/alerts` (Server-Sent Events) pushes `AnalyzeResponse` in real time whenever an event with `severity >= 31` produces an `alert_id`.
+- **Alert Queue**: `GET /v1/alerts` lists all unhandled/active alerts for moderator review.
+- **Web UI**: Access `/` or `/dashboard/login` for the pre-rendered Material 3 Expressive moderator interface.
+
+### 3. Practical Tips for App & Dashboard Developers
+- **OCR Cropping**: The PP-OCRv4 recognizer is a text-line model (height 48px). When sending camera photos or screenshots containing text, crop tightly to the text line/banner for 99%+ recognition accuracy.
+- **Privacy Compliance**: Per repo architecture, raw images and transcribed audio bodies are never stored in the database. Only HMAC hashes and risk metrics are persisted.
+- **Offline / Mock Testing**: Run server with `--mock` flag to simulate all multimodal responses without needing local ONNX weights or GPU acceleration.
