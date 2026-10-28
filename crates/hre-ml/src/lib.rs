@@ -43,6 +43,50 @@ pub struct ModelEntry {
     #[serde(default)]
     pub baseline: Vec<f64>,
 }
+
+impl ModelEntry {
+    /// Validate the training order and return its benign attribution baseline.
+    /// Transferred models may keep this metadata in the companion features.json.
+    pub fn validated_features(
+        &self,
+        root: &Path,
+        expected: &[String],
+    ) -> Result<Vec<f64>, ModelError> {
+        let (features, baseline) = if self.features.is_empty() && self.baseline.is_empty() {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct CompanionFeatures {
+                version: String,
+                message_features: Vec<String>,
+                call_features: Vec<String>,
+                baseline_message: Vec<f64>,
+                baseline_call: Vec<f64>,
+            }
+            let path = checked_artifact_path(root, "features.json")?;
+            let json = std::fs::read_to_string(path)
+                .map_err(|_| ModelError::Invalid("feature metadata unreadable"))?;
+            let companion: CompanionFeatures = serde_json::from_str(&json)?;
+            if companion.version != "v1" {
+                return Err(ModelError::Invalid("unsupported feature schema version"));
+            }
+            match self.task.as_str() {
+                "behavior_messages" => (companion.message_features, companion.baseline_message),
+                "behavior_calls" => (companion.call_features, companion.baseline_call),
+                _ => return Err(ModelError::Invalid("task has no behavior feature schema")),
+            }
+        } else {
+            (self.features.clone(), self.baseline.clone())
+        };
+        if features != expected
+            || features.is_empty()
+            || features.len() != baseline.len()
+            || baseline.iter().any(|value| !value.is_finite())
+        {
+            return Err(ModelError::Invalid("feature order or baseline mismatch"));
+        }
+        Ok(baseline)
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelBackend {
@@ -79,6 +123,66 @@ pub enum ModelError {
     Inference(String),
 }
 impl ModelManifest {
+    /// Verify an enabled artifact before loading it. Run in spawn_blocking during reloads.
+    /// This checks admission, not runtime readiness; loaders must validate tensors and warm up.
+    pub fn validated_entry(&self, root: &Path, task: &str) -> Result<&ModelEntry, ModelError> {
+        let entry = self
+            .models
+            .iter()
+            .find(|entry| entry.task == task)
+            .ok_or(ModelError::Invalid("model entry missing"))?;
+        if !matches!(entry.status, ModelStatus::Built) {
+            return Err(ModelError::Invalid(
+                "model is not enabled for real inference",
+            ));
+        }
+        let path = checked_artifact_path(root, &entry.path)?;
+        if !hash_file(&path)
+            .map_err(|_| ModelError::Invalid("model unreadable"))?
+            .eq_ignore_ascii_case(&entry.sha256)
+        {
+            return Err(ModelError::Invalid("model hash mismatch"));
+        }
+        if is_proxy_artifact(&path, task)? {
+            return Err(ModelError::Invalid("proxy model is not trained inference"));
+        }
+        if let Some(tokenizer) = &entry.tokenizer {
+            checked_artifact_path(root, tokenizer)?;
+        }
+        match task {
+            "text_fine_tuned" => {
+                if entry.tokenizer.is_none()
+                    || !entry
+                        .labels
+                        .iter()
+                        .map(String::as_str)
+                        .eq(TEXT_MODEL_LABELS)
+                {
+                    return Err(ModelError::Invalid(
+                        "text label order or tokenizer mismatch",
+                    ));
+                }
+                validate_probability_output(entry, 11)?;
+            }
+            "behavior_messages" | "behavior_calls" => {
+                if !entry
+                    .labels
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["non_harassment", "harassment"])
+                {
+                    return Err(ModelError::Invalid("behavior label order mismatch"));
+                }
+                validate_probability_output(entry, 2)?;
+            }
+            _ => {}
+        }
+        if !matches!(entry.backend, ModelBackend::Onnx) {
+            return Err(ModelError::Invalid("ONNX runtime requires ONNX backend"));
+        }
+        Ok(entry)
+    }
+
     /// Validates manifest declarations, without inspecting model tensor metadata.
     pub fn parse(json: &str) -> Result<Self, ModelError> {
         let manifest: Self = serde_json::from_str(json)?;
@@ -125,6 +229,50 @@ impl ModelManifest {
         }
         Ok(manifest)
     }
+}
+fn validate_probability_output(entry: &ModelEntry, labels: u64) -> Result<(), ModelError> {
+    if entry.outputs.len() != 1
+        || entry.outputs[0].name != "probabilities"
+        || !matches!(entry.outputs[0].dtype, TensorType::Float32)
+        || entry.outputs[0].shape != [1, labels]
+    {
+        return Err(ModelError::Invalid("probability output contract mismatch"));
+    }
+    Ok(())
+}
+
+fn checked_artifact_path(root: &Path, relative: &str) -> Result<std::path::PathBuf, ModelError> {
+    if !safe_relative_path(relative) {
+        return Err(ModelError::Invalid("unsafe artifact path"));
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|_| ModelError::Invalid("model root unavailable"))?;
+    let path = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|_| ModelError::Invalid("artifact missing"))?;
+    if !path.starts_with(root) || !path.is_file() {
+        return Err(ModelError::Invalid("unsafe artifact path"));
+    }
+    Ok(path)
+}
+
+/// Conservative admission guard for the shipped neural families, not proof of training.
+/// Tree ensembles can legitimately be small and use a separate lower bound.
+pub(crate) fn is_proxy_artifact(path: &Path, task: &str) -> Result<bool, ModelError> {
+    let minimum = match task {
+        "text_fast" | "text_accurate" | "text_fine_tuned" | "sentiment" | "embeddings" => 1_000_000,
+        "nsfw" | "deepfake" | "face" | "tone" => 16_384,
+        "ocr" => 100_000,
+        "behavior_messages" | "behavior_calls" => 1_024,
+        _ => return Ok(false),
+    };
+    let size = path
+        .metadata()
+        .map_err(|_| ModelError::Invalid("model unreadable"))?
+        .len();
+    Ok(size < minimum)
 }
 fn safe_relative_path(s: &str) -> bool {
     !s.is_empty()
@@ -200,6 +348,21 @@ impl ModelRegistry {
                         report
                             .degraded
                             .push(format!("{}.inference_unavailable", entry.task));
+                        if is_proxy_artifact(&path, &entry.task).unwrap_or(true) {
+                            report.degraded.push(format!("{}.proxy_model", entry.task));
+                        }
+                        if !matches!(entry.status, ModelStatus::Built) {
+                            report.degraded.push(format!("{}.not_enabled", entry.task));
+                        }
+                        if entry
+                            .tokenizer
+                            .as_ref()
+                            .is_some_and(|p| checked_artifact_path(root, p).is_err())
+                        {
+                            report
+                                .degraded
+                                .push(format!("{}.tokenizer_unavailable", entry.task));
+                        }
                     }
                     Ok(_) => report
                         .degraded
@@ -210,6 +373,23 @@ impl ModelRegistry {
             registry.models.insert(entry.task, report);
         }
         registry
+    }
+    /// Record successful validated loading and warm-up, never hash-only readiness.
+    /// The caller must first use validated_entry and the task's runtime loader.
+    pub fn mark_runtime_ready(&mut self, task: &str) -> Result<(), ModelError> {
+        let report = self
+            .models
+            .get_mut(task)
+            .ok_or(ModelError::Invalid("model entry missing"))?;
+        let unavailable = format!("{task}.inference_unavailable");
+        if !report.hash_verified || report.degraded.iter().any(|reason| reason != &unavailable) {
+            return Err(ModelError::Invalid(
+                "artifact is not eligible for runtime readiness",
+            ));
+        }
+        report.backend = Backend::Onnx;
+        report.degraded.clear();
+        Ok(())
     }
     /// Always reports missing fallback models even when the manifest has no entry for them.
     pub fn report(&self, name: &str) -> ModelReport {
@@ -404,7 +584,12 @@ mod tests {
         assert_eq!(registry.report("text_fast").backend, Backend::Heuristic);
         assert_eq!(
             registry.report("text").degraded,
-            ["text_fast.inference_unavailable"]
+            [
+                "text_fast.inference_unavailable",
+                "text_fast.proxy_model",
+                "text_fast.not_enabled",
+                "text_fast.tokenizer_unavailable"
+            ]
         );
         assert_eq!(registry.report("absent").degraded, ["absent.onnx_missing"]);
         std::fs::remove_file(dir.join("test.onnx")).unwrap();
@@ -417,6 +602,106 @@ mod tests {
             ModelRegistry::load(&dir).degraded,
             ["registry.manifest_missing"]
         );
+        std::fs::remove_dir(dir).unwrap();
+    }
+    #[test]
+    fn validated_loading_checks_digest_labels_and_readiness_separately() {
+        let dir = std::env::temp_dir().join(format!("hre-admission-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = vec![0u8; 2048];
+        std::fs::write(dir.join("test.onnx"), &bytes).unwrap();
+        let mut value = entry();
+        value["task"] = "behavior_messages".into();
+        value["status"] = "built".into();
+        value["sha256"] = format!("{:x}", Sha256::digest(&bytes)).into();
+        value["tokenizer"] = serde_json::Value::Null;
+        value["labels"] = serde_json::json!(["non_harassment", "harassment"]);
+        value["outputs"][0]["shape"] = serde_json::json!([1, 2]);
+        let manifest = parse_entries(vec![value.clone()]).unwrap();
+        assert!(manifest.validated_entry(&dir, "behavior_messages").is_ok());
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut registry = ModelRegistry::load(&dir);
+        assert_eq!(registry.report("behavior_msg").backend, Backend::Heuristic);
+        // Models become active only after the caller records successful runtime validation.
+        registry.mark_runtime_ready("behavior_messages").unwrap();
+        assert_eq!(registry.report("behavior_msg").backend, Backend::Onnx);
+        value["labels"] = serde_json::json!(["harassment", "non_harassment"]);
+        assert!(parse_entries(vec![value])
+            .unwrap()
+            .validated_entry(&dir, "behavior_messages")
+            .is_err());
+        std::fs::write(dir.join("test.onnx"), b"changed").unwrap();
+        assert!(manifest.validated_entry(&dir, "behavior_messages").is_err());
+        assert!(ModelRegistry::load(&dir)
+            .mark_runtime_ready("behavior_messages")
+            .is_err());
+        std::fs::remove_file(dir.join("test.onnx")).unwrap();
+        std::fs::remove_file(dir.join("manifest.json")).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn companion_schema_requires_exact_order_and_complete_baseline() {
+        let dir = std::env::temp_dir().join(format!("hre-features-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut value = entry();
+        value["task"] = "behavior_messages".into();
+        let model = parse_entries(vec![value]).unwrap().models.remove(0);
+        let expected = vec!["first".into(), "second".into()];
+        let mut companion = serde_json::json!({
+            "version":"v1", "message_features":expected, "call_features":["call"],
+            "baseline_message":[0.0, -1.0], "baseline_call":[0.0]
+        });
+        let path = dir.join("features.json");
+        std::fs::write(&path, companion.to_string()).unwrap();
+        assert_eq!(
+            model.validated_features(&dir, &expected).unwrap(),
+            [0.0, -1.0]
+        );
+        assert!(model
+            .validated_features(&dir, &["second".into(), "first".into()])
+            .is_err());
+        companion["baseline_message"] = serde_json::json!([0.0]);
+        std::fs::write(&path, companion.to_string()).unwrap();
+        assert!(model.validated_features(&dir, &expected).is_err());
+        companion["version"] = "unknown".into();
+        std::fs::write(&path, companion.to_string()).unwrap();
+        assert!(model.validated_features(&dir, &expected).is_err());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn tiny_neural_artifact_is_rejected_even_with_matching_digest() {
+        let dir = std::env::temp_dir().join(format!("hre-proxy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("test.onnx"), b"abc").unwrap();
+        let mut value = entry();
+        value["status"] = "built".into();
+        value["tokenizer"] = serde_json::Value::Null;
+        let manifest = parse_entries(vec![value]).unwrap();
+        assert!(matches!(
+            manifest.validated_entry(&dir, "text_fast"),
+            Err(ModelError::Invalid("proxy model is not trained inference"))
+        ));
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut registry = ModelRegistry::load(&dir);
+        assert!(registry.report("text").hash_verified);
+        assert!(registry
+            .report("text")
+            .degraded
+            .contains(&"text_fast.proxy_model".into()));
+        assert!(registry.mark_runtime_ready("text_fast").is_err());
+        std::fs::remove_file(dir.join("test.onnx")).unwrap();
+        std::fs::remove_file(dir.join("manifest.json")).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
     proptest::proptest! {

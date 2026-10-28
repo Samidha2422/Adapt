@@ -11,6 +11,7 @@ use tower::ServiceExt;
 
 fn config() -> EngineConfig {
     EngineConfig {
+        models_dir: "target/model-free-api-test-artifacts".into(),
         salt: "01234567890123456789012345678901".into(),
         api_keys: vec!["test-key".into()],
         moderator_tokens: vec!["test-moderator".into()],

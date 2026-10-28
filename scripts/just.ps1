@@ -16,19 +16,27 @@ try {
     & {
         $ErrorActionPreference = 'Continue'
         $vclib = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\lib\x64"
-        $winlib = Join-Path $root "target\winsdk-libs"
-        $ortLib = Join-Path $root ".venv\Lib\site-packages\onnxruntime\capi"
-        $env:LIB = "$winlib;$vclib;$env:LIB"
-        $env:PATH = "$ortLib;C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64;C:\Users\Kunshu\.local\bin;$env:PATH"
-        if (Test-Path (Join-Path $ortLib "onnxruntime.dll")) {
-            $env:ORT_DYLIB_PATH = Join-Path $ortLib "onnxruntime.dll"
+        if (Test-Path $vclib) {
+            $winlib = Join-Path $root "target\winsdk-libs"
+            $env:LIB = "$winlib;$vclib;$env:LIB"
+            $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64;$env:PATH"
         }
-        $env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
-        $env:AR = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\lib.exe"
+        $ortLib = Join-Path $root ".venv\Lib\site-packages\onnxruntime\capi"
+        if (Test-Path $ortLib) {
+            $env:PATH = "$ortLib;$env:PATH"
+            if (Test-Path (Join-Path $ortLib "onnxruntime.dll")) {
+                $env:ORT_DYLIB_PATH = Join-Path $ortLib "onnxruntime.dll"
+            }
+        }
+        if (Test-Path "C:\msys64\ucrt64\bin\gcc.exe") {
+            $env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
+            $env:AR = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\lib.exe"
+        }
 
         if ($Recipe -in @('bootstrap','fmt','format','lint','test','build','lock','run','mock','openapi','eval','bench')) { Get-Command cargo -ErrorAction Stop | Out-Null }
         if ($Recipe -like 'train-*') { Get-Command uv -ErrorAction Stop | Out-Null }
         switch ($Recipe) {
+            'integration-smoke' { & cargo test -p hre-api --test model_runtime -- --ignored --test-threads=1; break }
             'bootstrap' { & cargo install just --version 1.40.0 --locked --root target/tools; break }
             'fmt' { & cargo fmt --all -- --check; break }
             'format' { & cargo fmt --all; break }
@@ -51,8 +59,8 @@ try {
             'eval' { & cargo run -p hre-eval -- @RecipeArgs; break }
             'bench' { & cargo bench --workspace; break }
             'models-verify' { & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/models-verify.ps1; break }
-            'models-verify-install' { & python -m pip install --only-binary=:all: --target target/model-verify-deps onnx==1.20.1; break }
-            'models-verify-test' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps'); & python -m unittest discover -s scripts/tests -p 'test_verify_models.py'; break }
+            'models-verify-install' { & python -m pip install --only-binary=:all: --target target/model-verify-deps-clean onnx==1.20.1; break }
+            'models-verify-test' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps-clean'); & python -m unittest discover -s scripts/tests -p 'test_verify_models.py'; break }
             'training-test' { $env:PYTHONPATH = (Join-Path $root 'training/src'); & python -m unittest discover -s training/tests; break }
             default {
                 if ($Recipe -like 'train-*') {

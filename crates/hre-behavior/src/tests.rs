@@ -1,4 +1,58 @@
 use super::*;
+
+struct FixedBackend(f64);
+impl InferenceBackend for FixedBackend {
+    fn predict(&self, _: &[f64]) -> Result<f64, hre_ml::ModelError> {
+        Ok(self.0)
+    }
+    fn backend(&self) -> Backend {
+        Backend::Onnx
+    }
+}
+
+#[test]
+fn invalid_model_probabilities_fall_back_with_honest_diagnostics() {
+    let events = [event(0, "a", "b", 0)];
+    let config = BehaviorConfig::default();
+    let expected = analyze(&events, "a", "b", 0, &config).behavior.score;
+    for value in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+        let report =
+            analyze_with_backend(&events, "a", "b", 0, &config, Some(&FixedBackend(value)));
+        assert_eq!(report.behavior.score, expected);
+        assert_eq!(report.behavior.backend, Backend::Heuristic);
+        assert!(report
+            .degraded
+            .iter()
+            .any(|d| d == "behavior_msg.inference_failed"));
+        assert!(!report
+            .degraded
+            .iter()
+            .any(|d| d == "behavior_msg.onnx_missing"));
+    }
+}
+
+#[test]
+fn trained_model_does_not_claim_logistic_occlusion_explanations() {
+    let events = [event(0, "a", "b", 0)];
+    let report = analyze_with_backend(
+        &events,
+        "a",
+        "b",
+        0,
+        &BehaviorConfig::default(),
+        Some(&FixedBackend(0.8)),
+    );
+    assert_eq!(report.behavior.backend, Backend::Onnx);
+    assert_eq!(report.behavior.score, 0.8);
+    assert!(!report
+        .reasons
+        .iter()
+        .any(|r| r.code == "BEHAVIOR_OCCLUSION"));
+    assert!(report
+        .degraded
+        .iter()
+        .any(|d| d == "behavior.model_attribution_unavailable"));
+}
 fn event(i: usize, sender: &str, recipient: &str, ts: i64) -> StoredEvent {
     StoredEvent {
         event_id: format!("{i:05}"),

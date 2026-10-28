@@ -36,6 +36,8 @@ models-verify:
     @& ./scripts/just.ps1 models-verify
 models-verify-test:
     @& ./scripts/just.ps1 models-verify-test
+integration-smoke:
+    @& ./scripts/just.ps1 integration-smoke
 training-test:
     @& ./scripts/just.ps1 training-test
 models-verify-install:

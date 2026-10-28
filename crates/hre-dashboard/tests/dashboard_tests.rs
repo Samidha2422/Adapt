@@ -93,8 +93,8 @@ async fn test_malformed_event_does_not_break_queue() {
 async fn test_reconnect_deduplicates_id() {
     let page = hre_dashboard::views::queue::render_queue_page(&[]);
     assert!(
-        page.contains("seenEventIds.has(data.event_id)"),
-        "Client side must deduplicate incoming events by stable event ID"
+        page.contains("stream.addEventListener('resync', refreshQueue)"),
+        "Reconnect must resync persisted rows"
     );
 }
 

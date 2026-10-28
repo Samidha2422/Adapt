@@ -3,26 +3,24 @@
 pub fn render_calls_page() -> String {
     r##"<div class="page-header">
   <div>
-    <h1 class="page-title">Call Logs & Audio Ingestion</h1>
-    <p class="page-subtitle">Batch CSV telephony metadata import, voicemail tone analysis, and asynchronous audio job tracking.</p>
+    <h1 class="page-title">Calls & Audio</h1>
   </div>
 
   <div>
-    <span class="badge badge-built" style="font-size: 13px;">Transient Audio Shield Active</span>
+    <span class="badge badge-roadmap">Audio upload unavailable</span>
   </div>
 </div>
 
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;">
   <!-- Left: CSV Call Log Import Form -->
   <div class="card">
-    <h2 class="card-title">Import Telephony Call Logs (CSV)</h2>
-    <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 16px;">
-      Upload carrier or device call records (timestamp, caller, callee, duration_sec, answered, direction) to evaluate stalking velocity and overnight bursts.
-    </p>
+    <h2 class="card-title">Call Logs (CSV)</h2>
 
-    <form id="call-csv-form" hx-post="/v1/calllogs/import" hx-encoding="multipart/form-data" hx-target="#csv-result" hx-swap="innerHTML">
+    <form id="call-csv-form" onsubmit="importCallCsv(event)">
+      <div class="form-group"><label class="form-label" for="call-platform">Platform</label><input id="call-platform" name="platform" class="form-control" required /></div>
+      <div class="form-group"><label class="form-label" for="call-conversation">Conversation ID</label><input id="call-conversation" name="conversation_id" class="form-control" required maxlength="256" /></div>
       <div class="form-group">
-        <label class="form-label" for="csv-file">Select CSV File (Max 1MB)</label>
+        <label class="form-label" for="csv-file">CSV File (Max 2 MiB)</label>
         <input type="file" id="csv-file" name="file" accept=".csv" class="form-control" required />
       </div>
 
@@ -36,26 +34,23 @@ pub fn render_calls_page() -> String {
 
   <!-- Right: Voicemail / Audio Clip Analysis -->
   <div class="card">
-    <h2 class="card-title">Voicemail & Audio Note Screening</h2>
-    <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 16px;">
-      Submit consensual voicemail recording for ASR transcription, acoustic aggression analysis, and threat scoring. Raw audio is wiped transiently.
-    </p>
+    <h2 class="card-title">Voicemail & Audio Screening</h2>
 
-    <form id="audio-form" hx-post="/v1/recordings/analyze" hx-encoding="multipart/form-data" hx-target="#audio-result" hx-swap="innerHTML">
+    <p>Recording bytes are not accepted by the current API. No transcription is available here.</p><form id="audio-form"><fieldset disabled style="border:0;padding:0">
       <div class="form-group">
-        <label class="form-label" for="audio-file">Select Audio File (WAV/MP3/OGG)</label>
+        <label class="form-label" for="audio-file">Audio File (WAV/MP3/OGG)</label>
         <input type="file" id="audio-file" name="recording" accept="audio/*" class="form-control" required />
       </div>
 
       <div class="form-group">
         <label class="form-label" for="audio-sender">Sender Identifier (Pseudonymous)</label>
-        <input type="text" id="audio-sender" name="sender_id" value="anon_caller_382" class="form-control" />
+        <input type="text" id="audio-sender" name="sender_id" class="form-control" />
       </div>
 
       <button type="submit" class="btn btn-primary" style="width: 100%;">
         Submit Audio Analysis Job
       </button>
-    </form>
+    </fieldset></form>
 
     <div id="audio-result" style="margin-top: 16px;"></div>
   </div>
@@ -65,7 +60,7 @@ pub fn render_calls_page() -> String {
 <div class="card" style="margin-top: 24px;">
   <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px;">
     <h2 class="card-title" style="margin-bottom: 0;">Recent Async Ingestion Jobs</h2>
-    <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Auto-refreshed via <code>/v1/jobs/{{id}}</code></span>
+    <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Job history unavailable</span>
   </div>
 
   <div class="table-container">
@@ -80,34 +75,35 @@ pub fn render_calls_page() -> String {
           <th>Completed</th>
         </tr>
       </thead>
-      <tbody>
-        <tr>
-          <td><code>job-8f2a1b9c</code></td>
-          <td>Call Log CSV</td>
-          <td class="table-numbers">40 calls (Overnight)</td>
-          <td><span class="badge badge-urgent">Urgent (92/100)</span></td>
-          <td><span class="badge badge-built">Completed</span></td>
-          <td class="table-numbers">2.4s</td>
-        </tr>
-        <tr>
-          <td><code>job-3c7d9e4a</code></td>
-          <td>Voicemail Audio</td>
-          <td class="table-numbers">18.4s ASR (Threat)</td>
-          <td><span class="badge badge-high">High (84/100)</span></td>
-          <td><span class="badge badge-built">Completed</span></td>
-          <td class="table-numbers">1.1s</td>
-        </tr>
-        <tr>
-          <td><code>job-1e4b8f0d</code></td>
-          <td>Telephony CSV</td>
-          <td class="table-numbers">12 calls (Couple)</td>
-          <td><span class="badge badge-low">Low (14/100)</span></td>
-          <td><span class="badge badge-built">Completed</span></td>
-          <td class="table-numbers">0.8s</td>
-        </tr>
-      </tbody>
+      <tbody><tr><td colspan="6">No job history connected.</td></tr></tbody>
     </table>
   </div>
-</div>"##
+</div>
+<script>
+async function importCallCsv(event) {
+  event.preventDefault();
+  const form = event.target;
+  const result = document.getElementById('csv-result');
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const file = form.elements.file.files[0];
+    if (!file || file.size > 2 * 1024 * 1024) throw new Error('Select a CSV file up to 2 MiB.');
+    const response = await dashboardRequest('/v1/calllogs/import', {
+      platform: form.elements.platform.value,
+      conversation_id: form.elements.conversation_id.value,
+      csv: await file.text(), draft: false
+    });
+    const pre = document.createElement('pre');
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.textContent = JSON.stringify(response, null, 2);
+    result.replaceChildren(pre);
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+</script>"##
         .to_string()
 }

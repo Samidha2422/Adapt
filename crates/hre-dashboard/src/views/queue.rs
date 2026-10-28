@@ -14,7 +14,7 @@ pub fn render_alert_item(alert: &AnalyzeResponse) -> String {
     let simulated_chip = if alert.simulated {
         r#"<span class="badge badge-simulated" title="Simulated: Mock or demo override active">Simulated</span>"#
     } else {
-        r#"<span class="badge badge-built" title="Production AI / Validated Model">Built</span>"#
+        r#"<span class="badge badge-built" title="Engine result; see signal backends">Built</span>"#
     };
 
     let reasons_summary = if alert.reasons.is_empty() {
@@ -48,7 +48,7 @@ pub fn render_alert_item(alert: &AnalyzeResponse) -> String {
     };
 
     format!(
-        r##"<div class="alert-row alert-row-enter" data-event-id="{}" id="alert-item-{}">
+        r##"<div class="alert-row alert-row-enter" data-event-id="{}" data-tier="{}" id="alert-item-{}">
   <div>
     <span class="table-numbers" style="font-weight: 700; font-size: 18px; color: var(--md-sys-color-primary);">{}</span>
     <div style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">/100</div>
@@ -82,6 +82,7 @@ pub fn render_alert_item(alert: &AnalyzeResponse) -> String {
   </div>
 </div>"##,
         alert.event_id,
+        tier_str,
         alert.event_id,
         alert.severity,
         tier_badge_class,
@@ -114,7 +115,7 @@ pub fn html_escape(input: &str) -> String {
 }
 
 /// Renders the complete Live Alert Queue page shell.
-pub fn render_queue_page(initial_alerts: &[AnalyzeResponse]) -> String {
+pub fn render_queue_items(initial_alerts: &[AnalyzeResponse]) -> String {
     let mut alerts_html = String::new();
     if initial_alerts.is_empty() {
         alerts_html.push_str(
@@ -123,97 +124,128 @@ pub fn render_queue_page(initial_alerts: &[AnalyzeResponse]) -> String {
     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
   </svg>
   <div style="font-size: 16px; font-weight: 500;">No active alerts in queue</div>
-  <div style="font-size: 13px; margin-top: 4px;">Incoming alerts from the live SSE feed will appear here in real time.</div>
 </div>"#,
         );
     } else {
+        let mut seen = std::collections::BTreeSet::new();
         for alert in initial_alerts {
+            if !seen.insert(alert.event_id) {
+                continue;
+            }
             alerts_html.push_str(&render_alert_item(alert));
         }
     }
 
+    alerts_html
+}
+
+pub fn render_queue_page(initial_alerts: &[AnalyzeResponse]) -> String {
     format!(
         r##"<div class="page-header">
   <div>
-    <h1 class="page-title">Live Alert Triage Queue</h1>
-    <p class="page-subtitle">Real-time multimodal harassment incident stream with automated deduplication and explainable severity scores.</p>
+    <h1 class="page-title">Live Triage Queue</h1>
   </div>
 
-  <div style="display: flex; gap: 12px; align-items: center;">
-    <button type="button" class="btn btn-secondary" onclick="filterQueue('all')">All</button>
-    <button type="button" class="btn btn-secondary" onclick="filterQueue('urgent')"><span class="badge badge-urgent" style="padding: 2px 6px; font-size: 11px;">Urgent</span></button>
-    <button type="button" class="btn btn-secondary" onclick="filterQueue('high')"><span class="badge badge-high" style="padding: 2px 6px; font-size: 11px;">High</span></button>
-    <button type="button" class="btn btn-secondary" onclick="filterQueue('review')"><span class="badge badge-review" style="padding: 2px 6px; font-size: 11px;">Review</span></button>
+  <div style="display: flex; gap: 8px; align-items: center;">
+    <button type="button" class="btn btn-secondary filter-btn active" data-filter="all" onclick="filterQueue('all')">All</button>
+    <button type="button" class="btn btn-secondary filter-btn" data-filter="urgent" onclick="filterQueue('urgent')"><span class="badge badge-urgent" style="padding: 2px 6px; font-size: 11px;">Urgent</span></button>
+    <button type="button" class="btn btn-secondary filter-btn" data-filter="high" onclick="filterQueue('high')"><span class="badge badge-high" style="padding: 2px 6px; font-size: 11px;">High</span></button>
+    <button type="button" class="btn btn-secondary filter-btn" data-filter="review" onclick="filterQueue('review')"><span class="badge badge-review" style="padding: 2px 6px; font-size: 11px;">Review</span></button>
   </div>
 </div>
 
 <!-- SSE Connection Container with HTMX -->
 <div class="card" style="padding: 0; overflow: hidden;">
-  <div style="padding: 14px 20px; background: var(--md-sys-color-surface-container); border-bottom: 1px solid var(--md-sys-color-outline-variant); display: flex; justify-content: space-between; align-items: center;">
-    <div style="display: flex; align-items: center; gap: 12px;">
-      <span style="font-weight: 600; font-size: 14px;">Incoming Incident Stream</span>
-      <span class="badge badge-built" id="sse-badge">SSE Connected</span>
-    </div>
-    <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">
-      Listening on <code>/v1/stream/alerts</code>
+  <div style="padding: 12px 20px; background: var(--md-sys-color-surface-container); border-bottom: 1px solid var(--md-sys-color-outline-variant); display: flex; justify-content: space-between; align-items: center;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <span style="font-weight: 600; font-size: 13px;">Incident Feed</span>
+      <span class="badge badge-roadmap" id="sse-badge" role="status">Connecting</span>
     </div>
   </div>
 
   <!-- Real-time feed element -->
   <div id="alerts-feed"
-       hx-ext="sse"
-       sse-connect="/v1/stream/alerts"
-       sse-swap="alert"
-       hx-swap="afterbegin"
        style="min-height: 200px;">
     {}
   </div>
 </div>
 
 <script>
-  // Client-side deduplication and safe reconnect handling
-  const seenEventIds = new Set();
-  document.querySelectorAll('[data-event-id]').forEach(el => {{
-    seenEventIds.add(el.getAttribute('data-event-id'));
-  }});
+  let activeTierFilter = 'all';
+  const stream = new EventSource('/v1/stream/alerts');
+  let refreshing = false;
+  let refreshAgain = false;
 
-  document.body.addEventListener('htmx:sseBeforeMessage', function(e) {{
-    try {{
-      const data = JSON.parse(e.detail.data);
-      if (data && data.event_id) {{
-        if (seenEventIds.has(data.event_id)) {{
-          e.preventDefault(); // Prevent duplicate insertion
-          return;
-        }}
-        seenEventIds.add(data.event_id);
-        const emptyState = document.getElementById('queue-empty-state');
-        if (emptyState) emptyState.remove();
-      }}
-    }} catch (err) {{
-      // Malformed event handling: do not break the page
-      console.warn('Received unparseable SSE message', err);
-    }}
-  }});
-
-  document.body.addEventListener('htmx:sseError', function() {{
+  function streamStatus(text, connected) {{
     const badge = document.getElementById('sse-badge');
-    if (badge) {{
-      badge.className = 'badge badge-roadmap';
-      badge.textContent = 'Disconnected / Retrying';
+    badge.className = connected ? 'badge badge-built' : 'badge badge-roadmap';
+    badge.textContent = text;
+  }}
+
+  async function refreshQueue() {{
+    if (refreshing) {{ refreshAgain = true; return; }}
+    refreshing = true;
+    try {{
+      const response = await fetch('/dashboard/queue/items', {{ credentials: 'same-origin', cache: 'no-store' }});
+      if (!response.ok || response.redirected) throw new Error('Queue unavailable');
+      const html = await response.text();
+      document.getElementById('alerts-feed').innerHTML = html;
+      applyActiveFilter();
+    }} catch (err) {{
+      streamStatus('Refresh unavailable', false);
+    }} finally {{
+      refreshing = false;
+      if (refreshAgain) {{ refreshAgain = false; refreshQueue(); }}
     }}
+  }}
+
+  stream.onopen = function() {{
+    streamStatus('Live', true);
+    document.body.dispatchEvent(new Event('htmx:sseOpen'));
+    refreshQueue();
+  }};
+  stream.onerror = function() {{
+    streamStatus('Disconnected / Retrying', false);
+    document.body.dispatchEvent(new Event('htmx:sseError'));
+  }};
+  stream.addEventListener('alert', function(event) {{
+    try {{
+      const data = JSON.parse(event.data);
+      if (data && data.event_id) refreshQueue();
+    }} catch (err) {{
+      streamStatus('Invalid stream update', false);
+    }}
+  }});
+  stream.addEventListener('resync', refreshQueue);
+  const refreshTimer = setInterval(refreshQueue, 30000);
+  window.addEventListener('pagehide', function() {{
+    stream.close();
+    clearInterval(refreshTimer);
   }});
 
   function filterQueue(tier) {{
+    activeTierFilter = tier;
+    document.querySelectorAll('.filter-btn').forEach(btn => {{
+      if (btn.getAttribute('data-filter') === tier) {{
+        btn.classList.add('active');
+      }} else {{
+        btn.classList.remove('active');
+      }}
+    }});
+    applyActiveFilter();
+  }}
+
+  function applyActiveFilter() {{
     document.querySelectorAll('.alert-row').forEach(row => {{
-      if (tier === 'all') {{
+      if (activeTierFilter === 'all') {{
         row.style.display = 'grid';
       }} else {{
-        const text = row.innerText.toLowerCase();
-        row.style.display = text.includes(tier) ? 'grid' : 'none';
+        const rowTier = row.getAttribute('data-tier');
+        row.style.display = (rowTier === activeTierFilter) ? 'grid' : 'none';
       }}
     }});
   }}
 </script>"##,
-        alerts_html
+        render_queue_items(initial_alerts)
     )
 }

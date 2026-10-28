@@ -9,6 +9,7 @@ use tower::ServiceExt;
 
 fn config() -> EngineConfig {
     EngineConfig {
+        models_dir: "target/model-free-api-test-artifacts".into(),
         salt: "a".repeat(32),
         api_keys: vec!["client-key".into()],
         moderator_tokens: vec!["moderator-key".into()],
