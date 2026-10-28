@@ -1,4 +1,4 @@
-﻿# Model contract (proposed)
+# Model contract (proposed)
 
 This is the coordination contract for Pascal's verifier and model exporters, before backend implementation. It specifies **proposed wrapper exports**, not verified native model signatures, labels, preprocessing, licenses, availability, or measured thresholds. No named upstream model is asserted to satisfy it. An exporter must inspect its actual artifact and tokenizer/processor, implement the adapter, check license and label mapping, and demonstrate parity before enabling it. If a native model cannot implement the contract, revise and version the contract with the verifier and consumers before export. The existing `hre-ml` parser currently accepts only `name`, `path`, `sha256`, `version`, `features`, and `baseline`, denies unknown fields, verifies hashes, and selects heuristic inference. It does **not** accept these examples or perform ONNX inference; migration is required. A verified hash alone never means inference is active.
 
@@ -32,10 +32,10 @@ Inputs `input_ids`, `attention_mask`, both int64 `[1,256]`; output `probabilitie
 
 ## Fine-tuned text — `text_fine_tuned`
 
-Inputs `input_ids`, `attention_mask`, int64 `[1,128]`; output `probabilities` float32 `[1,5]`, independent sigmoid labels `harassment`, `threat`, `coercion`, `sexual_harassment`, `identity_attack`. Use the pinned training tokenizer, special tokens and pad/truncate to 128; training and export must freeze exactly these labels and their order. Default per-label decision >=0.5 pending held-out calibration. These are proposed labels, not a claim of an existing trained head.
+Inputs `input_ids`, `attention_mask`, int64 `[1,128]`; output `probabilities` float32 `[1,11]`, independent sigmoid labels `toxicity`, `severe_toxicity`, `obscene`, `insult`, `threat`, `identity_attack`, `sexual_explicit`, `coercion_sextortion`, `stalking_cue`, `doxxing_cue`, `sexual_harassment`. Use the pinned training tokenizer, special tokens and pad/truncate to 128; training and export freeze exactly these 11 labels and their order. Default per-label decision >=0.325 pending held-out calibration.
 
 ```json
-{"id":"text_fine_tuned","version":"proposed-1","task":"text_fine_tuned","backend":"onnx","path":"text_fine_tuned.onnx","sha256":"0000000000000000000000000000000000000000000000000000000000000000","tokenizer":"unverified","labels":["harassment","threat","coercion","sexual_harassment","identity_attack"],"thresholds":{"decision":0.5},"license":"unverified","tier":"fine_tuned","status":"roadmap","outputs":[{"name":"probabilities","dtype":"float32","shape":[1,5]}]}
+{"id":"text_fine_tuned","version":"proposed-1","task":"text_fine_tuned","backend":"onnx","path":"text_fine_tuned.onnx","sha256":"0000000000000000000000000000000000000000000000000000000000000000","tokenizer":"unverified","labels":["toxicity","severe_toxicity","obscene","insult","threat","identity_attack","sexual_explicit","coercion_sextortion","stalking_cue","doxxing_cue","sexual_harassment"],"thresholds":{"decision":0.325},"license":"unverified","tier":"fine_tuned","status":"roadmap","outputs":[{"name":"probabilities","dtype":"float32","shape":[1,11]}]}
 ```
 
 ## Sentiment — `sentiment`

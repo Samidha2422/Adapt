@@ -15,6 +15,17 @@ $code = 0
 try {
     & {
         $ErrorActionPreference = 'Continue'
+        $vclib = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\lib\x64"
+        $winlib = Join-Path $root "target\winsdk-libs"
+        $ortLib = Join-Path $root ".venv\Lib\site-packages\onnxruntime\capi"
+        $env:LIB = "$winlib;$vclib;$env:LIB"
+        $env:PATH = "$ortLib;C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64;C:\Users\Kunshu\.local\bin;$env:PATH"
+        if (Test-Path (Join-Path $ortLib "onnxruntime.dll")) {
+            $env:ORT_DYLIB_PATH = Join-Path $ortLib "onnxruntime.dll"
+        }
+        $env:CC = "C:\msys64\ucrt64\bin\gcc.exe"
+        $env:AR = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64\lib.exe"
+
         if ($Recipe -in @('bootstrap','fmt','format','lint','test','build','lock','run','mock','openapi','eval','bench')) { Get-Command cargo -ErrorAction Stop | Out-Null }
         if ($Recipe -like 'train-*') { Get-Command uv -ErrorAction Stop | Out-Null }
         switch ($Recipe) {

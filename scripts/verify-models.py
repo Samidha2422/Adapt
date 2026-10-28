@@ -11,7 +11,7 @@ import sys
 TASK_OUTPUTS = {
     "text_fast": {"probabilities": ("float32", [1, 7])},
     "text_accurate": {"probabilities": ("float32", [1, 2])},
-    "text_fine_tuned": {"probabilities": ("float32", [1, 5])},
+    "text_fine_tuned": {"probabilities": ("float32", [1, 11])},
     "sentiment": {"probabilities": ("float32", [1, 3])},
     "embeddings": {"embedding": ("float32", [1, 384])},
     "nsfw": {"probabilities": ("float32", [1, 2])},
