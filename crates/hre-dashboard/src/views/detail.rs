@@ -59,11 +59,11 @@ fn render_signal_card(name: &str, signal: &Signal) -> String {
         signal.score,
         conf_pct,
         score_pct,
-        if signal.label.is_empty() {
+        html_escape(if signal.label.is_empty() {
             "none"
         } else {
             &signal.label
-        },
+        }),
         html_escape(&details_json)
     )
 }
@@ -80,7 +80,7 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
     let simulated_badge = if alert.simulated {
         r#"<span class="badge badge-simulated" style="font-size: 13px;">Simulated Pipeline Active</span>"#
     } else {
-        r#"<span class="badge badge-built" style="font-size: 13px;">Live Model Inference</span>"#
+        r#"<span class="badge badge-built" style="font-size: 13px;">Engine result</span>"#
     };
 
     let degraded_notice = if !alert.degraded.is_empty() {
@@ -88,7 +88,7 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
             r#"<div style="margin-top: 12px; padding: 10px 14px; background: var(--hre-tier-high-bg); color: var(--hre-tier-high); border-radius: 8px; font-size: 13px;">
   <strong>Degraded Backends:</strong> {}
 </div>"#,
-            alert.degraded.join(", ")
+            html_escape(&alert.degraded.join(", "))
         )
     } else {
         String::new()
@@ -119,19 +119,59 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
         ));
     }
 
-    // 8 Modality Signal Cards
+    // Partition active vs inactive modality signals to cut cognitive noise
     let sigs = &alert.signals;
-    let signals_html = format!(
-        "{}{}{}{}{}{}{}{}",
-        render_signal_card("Text NLP", &sigs.text),
-        render_signal_card("Vision OCR", &sigs.ocr),
-        render_signal_card("Image NSFW", &sigs.image),
-        render_signal_card("Audio Tone/ASR", &sigs.audio),
-        render_signal_card("Call Patterns", &sigs.call),
-        render_signal_card("Behavioral Trajectory", &sigs.behavior),
-        render_signal_card("Social Pile-On", &sigs.pile_on),
-        render_signal_card("PII Leakage", &sigs.pii),
-    );
+    let all_signals = [
+        ("Text NLP", &sigs.text),
+        ("Vision OCR", &sigs.ocr),
+        ("Image NSFW", &sigs.image),
+        ("Audio Tone/ASR", &sigs.audio),
+        ("Call Patterns", &sigs.call),
+        ("Behavioral Trajectory", &sigs.behavior),
+        ("Social Pile-On", &sigs.pile_on),
+        ("PII Leakage", &sigs.pii),
+    ];
+
+    let mut active_cards = String::new();
+    let mut inactive_badges = String::new();
+
+    for (name, sig) in all_signals {
+        if sig.score > 0.0 {
+            active_cards.push_str(&render_signal_card(name, sig));
+        } else {
+            let backend_name = match sig.backend {
+                Backend::Disabled => "Disabled",
+                Backend::Heuristic => "Heuristic",
+                Backend::Onnx => "ONNX",
+                Backend::Ggml => "GGML",
+            };
+            let (status, class) = match sig.status {
+                Status::Built => ("built", "badge-built"),
+                Status::Simulated => ("simulated", "badge-simulated"),
+                Status::Roadmap => ("roadmap", "badge-roadmap"),
+            };
+            inactive_badges.push_str(&format!(
+                r#"<span class="badge {class}" style="font-size: 11px;">{name} ({backend_name}, {status})</span>"#,
+            ));
+        }
+    }
+
+    if active_cards.is_empty() {
+        active_cards.push_str(&render_signal_card("Text NLP", &sigs.text));
+        active_cards.push_str(&render_signal_card("Behavioral Trajectory", &sigs.behavior));
+    }
+
+    let inactive_tray = if !inactive_badges.is_empty() {
+        format!(
+            r##"<div style="margin-top: 14px; padding: 10px 14px; background: var(--md-sys-color-surface-container); border-radius: 8px; font-size: 12px; color: var(--md-sys-color-on-surface-variant); display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+  <span style="font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;">Zero-score modalities:</span>
+  {}
+</div>"##,
+            inactive_badges
+        )
+    } else {
+        String::new()
+    };
 
     let alert_id_str = alert
         .alert_id
@@ -166,7 +206,7 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
 
 {}
 
-<!-- Grid layout: Left 8-Signals & Attribution, Right Moderation Actions -->
+<!-- Grid layout: Left Signals & Attribution, Right Moderation Actions -->
 <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px; align-items: start;">
   <div>
     <!-- Modality Signals Grid -->
@@ -175,6 +215,7 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
       <div class="signal-grid">
         {}
       </div>
+      {}
     </div>
 
     <!-- Attribution & Reasons -->
@@ -185,39 +226,26 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
       </div>
     </div>
 
-    <!-- Privacy-Preserving Media Preview -->
+    <!-- Privacy-Preserving Content Shield -->
     <div class="card">
       <h2 class="card-title">Media & Content Shield</h2>
-      <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 12px;">
-        To protect moderator wellbeing, explicit or harassment content is automatically blurred. Unblur only if necessary for adjudication.
-      </p>
-      <div class="media-preview-container">
-        <div id="media-content" class="media-blur" style="background: #2b2b36; color: #fff; padding: 24px; text-align: center; font-size: 13px;">
-          [Protected Harassment Payload — Click Below to Unblur]
-        </div>
-      </div>
-      <button type="button" class="btn btn-secondary" style="margin-top: 10px;" onclick="toggleMediaBlur()">
-        Toggle Blur Shield
-      </button>
+      <p>Raw message and media content is not retained. Review the scores and reasons above.</p>
     </div>
   </div>
 
   <!-- Right Sidebar: Reversible Moderation Actions -->
   <div>
     <div class="card" style="border: 2px solid var(--md-sys-color-primary-container);">
-      <h2 class="card-title" style="color: var(--md-sys-color-primary);">Human Moderation Action</h2>
-      <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 16px;">
-        AI flags harassment risks and provides reasons; human moderators retain sole authority over user actions.
-      </p>
+      <h2 class="card-title" style="color: var(--md-sys-color-primary);">Moderator Adjudication</h2>
 
       <form id="review-form" hx-post="/dashboard/alerts/{}/review" hx-swap="outerHTML">
         <div class="form-group">
-          <label class="form-label">Recommended Engine Action</label>
+          <label class="form-label">Engine Recommended Action</label>
           <div style="font-weight: 700; font-size: 15px; color: var(--md-sys-color-primary);">{}</div>
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="decision-select">Your Adjudication Decision</label>
+          <label class="form-label" for="decision-select">Decision</label>
           <select id="decision-select" name="decision" class="form-control" style="font-weight: 600;">
             <option value="confirm">Confirm Violation (Escalate/Action)</option>
             <option value="reject">Reject (False Positive / Benign)</option>
@@ -226,35 +254,28 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
         </div>
 
         <div class="form-group">
-          <label class="form-label" for="mod-note">Moderator Investigation Note (Optional)</label>
-          <textarea id="mod-note" name="note" class="form-control" rows="3" placeholder="Explain the rationale or contextual nuance..."></textarea>
+          <label class="form-label" for="mod-note">Investigation Note (Optional)</label>
+          <textarea id="mod-note" name="note" class="form-control" rows="3" placeholder="Contextual rationale..."></textarea>
         </div>
 
         <button type="submit" class="btn btn-primary" style="width: 100%;">
-          Submit Reversible Decision
+          Submit Decision
         </button>
       </form>
     </div>
 
     <!-- Quick Navigation -->
     <div class="card">
-      <h3 style="font-size: 15px; margin-bottom: 12px;">Investigation Tools</h3>
+      <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">Investigation Tools</h3>
       <div style="display: flex; flex-direction: column; gap: 8px;">
-        <a href="/dashboard/timelines" class="btn btn-secondary" style="font-size: 13px;">View Pair Timeline</a>
-        <a href="/dashboard/evidence" class="btn btn-secondary" style="font-size: 13px;">Generate Evidence Report</a>
+        <a href="/dashboard/timelines" class="btn btn-secondary" style="font-size: 12px;">View Pair Timeline</a>
+        <a href="/dashboard/evidence" class="btn btn-secondary" style="font-size: 12px;">Generate Evidence Report</a>
       </div>
     </div>
   </div>
 </div>
 
-<script>
-  function toggleMediaBlur() {{
-    const el = document.getElementById('media-content');
-    if (el) {{
-      el.classList.toggle('media-unblurred');
-    }}
-  }}
-</script>"##,
+"##,
         tier_badge_class,
         tier_str,
         simulated_badge,
@@ -263,7 +284,8 @@ pub fn render_detail_page(alert: &AnalyzeResponse) -> String {
         alert.latency_ms,
         alert.severity,
         degraded_notice,
-        signals_html,
+        active_cards,
+        inactive_tray,
         reasons_html,
         alert_id_str,
         action_str

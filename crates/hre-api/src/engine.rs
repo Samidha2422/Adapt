@@ -6,6 +6,85 @@ use hre_vision::ImageBackend;
 use std::{collections::BTreeMap, time::Instant};
 use tokio::sync::Mutex;
 
+const CALL_MODEL_FEATURES: [&str; 8] = [
+    "outgoing_calls_1h",
+    "outgoing_calls_24h",
+    "unanswered_calls_24h",
+    "night_calls_24h",
+    "after_refusal_calls_24h",
+    "answered_duration_s_24h",
+    "distinct_callers_24h",
+    "recipient_reply_ratio_24h",
+];
+
+fn call_model_vector(
+    events: &[StoredEvent],
+    event: &StoredEvent,
+    config: &hre_behavior::BehaviorConfig,
+) -> Vec<f32> {
+    let recent: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.kind == StoredKind::Call
+                && e.timestamp_ms <= event.timestamp_ms
+                && e.timestamp_ms >= event.timestamp_ms.saturating_sub(86_400_000)
+        })
+        .collect();
+    let outgoing: Vec<_> = recent
+        .iter()
+        .copied()
+        .filter(|e| e.sender == event.sender && e.recipient == event.recipient)
+        .collect();
+    let reverse = recent
+        .iter()
+        .filter(|e| e.sender == event.recipient && e.recipient == event.sender)
+        .count();
+    let night = outgoing
+        .iter()
+        .filter(|e| {
+            let hour = (e.timestamp_ms.div_euclid(60_000)
+                + i64::from(config.recipient_utc_offset_minutes))
+            .rem_euclid(1440)
+                / 60;
+            let (start, end) = (
+                i64::from(config.night_start_hour),
+                i64::from(config.night_end_hour),
+            );
+            if start <= end {
+                hour >= start && hour < end
+            } else {
+                hour >= start || hour < end
+            }
+        })
+        .count();
+    vec![
+        outgoing
+            .iter()
+            .filter(|e| e.timestamp_ms >= event.timestamp_ms.saturating_sub(3_600_000))
+            .count() as f32,
+        outgoing.len() as f32,
+        outgoing.iter().filter(|e| !e.answered).count() as f32,
+        night as f32,
+        outgoing.iter().filter(|e| e.after_refusal).count() as f32,
+        outgoing
+            .iter()
+            .filter(|e| e.answered)
+            .map(|e| e.duration_s as f32)
+            .sum(),
+        recent
+            .iter()
+            .filter(|e| e.recipient == event.recipient)
+            .map(|e| &e.sender)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as f32,
+        if outgoing.len() + reverse == 0 {
+            0.0
+        } else {
+            reverse as f32 / (outgoing.len() + reverse) as f32
+        },
+    ]
+}
+
 pub(crate) struct Engine {
     store: Option<Store>,
     pub(crate) ids: Pseudonymizer,
@@ -23,11 +102,12 @@ pub(crate) struct Engine {
     pub(crate) slang_adapter: hre_slang::AdapterManager,
     pub(crate) text_backend: std::sync::Arc<dyn hre_text::TextBackend>,
     pub(crate) onnx_behavior: Option<std::sync::Arc<hre_ml::OnnxBehaviorModel>>,
+    onnx_calls: Option<std::sync::Arc<hre_ml::OnnxBehaviorModel>>,
 }
 impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
         let models_dir = config.models_dir.clone();
-        let (mut behavior, fusion, registry, text_backend, onnx_behavior) =
+        let (mut behavior, fusion, registry, text_backend, onnx_behavior, onnx_calls) =
             tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
                 let behavior = match std::fs::read_to_string("config/behavior_rules.toml") {
                     Ok(text) => hre_behavior::BehaviorConfig::parse(&text)?,
@@ -44,35 +124,64 @@ impl Engine {
                     Err(e) => return Err(e.into()),
                 };
                 let models_path = std::path::Path::new(&models_dir);
-                let manifest = std::fs::read_to_string(models_path.join("manifest.json"))
-                    .ok()
+                let manifest = (!mock)
+                    .then(|| std::fs::read_to_string(models_path.join("manifest.json")).ok())
+                    .flatten()
                     .and_then(|j| hre_ml::ModelManifest::parse(&j).ok());
-                let text_thresholds = manifest
-                    .as_ref()
-                    .and_then(|m| {
-                        m.models
-                            .iter()
-                            .find(|entry| entry.task == "text_fine_tuned")
-                    })
-                    .map(|entry| entry.thresholds.clone())
-                    .unwrap_or_default();
+                let mut registry = if mock {
+                    hre_ml::ModelRegistry::default()
+                } else {
+                    hre_ml::ModelRegistry::load(models_path)
+                };
+                let load_text = || -> Result<hre_ml::OnnxTextBackend, hre_ml::ModelError> {
+                    let manifest = manifest
+                        .as_ref()
+                        .ok_or(hre_ml::ModelError::Invalid("manifest unavailable"))?;
+                    let entry = manifest.validated_entry(models_path, "text_fine_tuned")?;
+                    let tokenizer = entry
+                        .tokenizer
+                        .as_ref()
+                        .ok_or(hre_ml::ModelError::Invalid("tokenizer missing"))?;
+                    let model = hre_ml::OnnxTextModel::load(
+                        &models_path.join(&entry.path),
+                        &models_path.join(tokenizer),
+                    )?;
+                    Ok(hre_ml::OnnxTextBackend::new(
+                        std::sync::Arc::new(model),
+                        entry.thresholds.clone(),
+                    ))
+                };
 
-                let text_backend: std::sync::Arc<dyn hre_text::TextBackend> =
-                    match hre_ml::OnnxTextBackend::load_from_dir(models_path, text_thresholds) {
-                        Ok(b) => std::sync::Arc::new(b),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to load ONNX text model ({e}); using heuristic backend"
-                            );
-                            std::sync::Arc::new(hre_text::HeuristicTextBackend)
-                        }
-                    };
+                let text_backend: std::sync::Arc<dyn hre_text::TextBackend> = match load_text() {
+                    Ok(b) => {
+                        registry.mark_runtime_ready("text_fine_tuned")?;
+                        std::sync::Arc::new(b)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load ONNX text model ({e}); using heuristic backend"
+                        );
+                        std::sync::Arc::new(hre_text::HeuristicTextBackend)
+                    }
+                };
 
-                let onnx_behavior = match hre_ml::OnnxBehaviorModel::load(
-                    &models_path.join("behavior_msg.onnx"),
-                    47,
-                ) {
-                    Ok(m) => Some(std::sync::Arc::new(m)),
+                let load_behavior = || -> Result<hre_ml::OnnxBehaviorModel, hre_ml::ModelError> {
+                    let manifest = manifest
+                        .as_ref()
+                        .ok_or(hre_ml::ModelError::Invalid("manifest unavailable"))?;
+                    let entry = manifest.validated_entry(models_path, "behavior_messages")?;
+                    let order = hre_behavior::feature_order();
+                    entry.validated_features(models_path, &order)?;
+                    hre_ml::OnnxBehaviorModel::load(
+                        &models_path.join(&entry.path),
+                        order.len(),
+                    )
+                };
+                let onnx_behavior = match load_behavior() {
+                    Ok(m) => {
+                        registry.mark_runtime_ready("behavior_messages")?;
+                        Some(std::sync::Arc::new(m))
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to load ONNX behavior model ({e}); using logistic fallback"
@@ -81,13 +190,16 @@ impl Engine {
                     }
                 };
 
-                Ok((
-                    behavior,
-                    fusion,
-                    hre_ml::ModelRegistry::load(models_path),
-                    text_backend,
-                    onnx_behavior,
-                ))
+                let onnx_calls = (|| -> Result<_, hre_ml::ModelError> {
+                    let manifest = manifest.as_ref().ok_or(hre_ml::ModelError::Invalid("manifest unavailable"))?;
+                    let entry = manifest.validated_entry(models_path, "behavior_calls")?;
+                    let order: Vec<String> = CALL_MODEL_FEATURES.iter().map(|s| (*s).into()).collect();
+                    entry.validated_features(models_path, &order)?;
+                    let model = hre_ml::OnnxBehaviorModel::load(&models_path.join(&entry.path), order.len())?;
+                    registry.mark_runtime_ready("behavior_calls")?;
+                    Ok(std::sync::Arc::new(model))
+                })().map_err(|error| tracing::warn!(%error, "Call model unavailable; using heuristic fallback")).ok();
+                Ok((behavior, fusion, registry, text_backend, onnx_behavior, onnx_calls))
             })
             .await??;
         behavior.night_start_hour = u32::from(config.night_start_hour);
@@ -134,6 +246,7 @@ impl Engine {
             slang_adapter,
             text_backend,
             onnx_behavior,
+            onnx_calls,
         })
     }
     pub async fn analyze(
@@ -435,6 +548,7 @@ impl Engine {
         let fusion_config = self.fusion.clone();
         let registry = self.registry.clone();
         let onnx_behavior = self.onnx_behavior.clone();
+        let onnx_calls = self.onnx_calls.clone();
         let call_config = hre_calls::CallFeatureConfig {
             night_start_hour: self.behavior.night_start_hour,
             night_end_hour: self.behavior.night_end_hour,
@@ -460,6 +574,7 @@ impl Engine {
                 &call_config,
                 voicemail,
                 onnx_behavior.as_deref(),
+                onnx_calls.as_deref(),
             )
         })
         .await
@@ -520,6 +635,7 @@ impl Engine {
         call_config: &hre_calls::CallFeatureConfig,
         voicemail: bool,
         onnx_behavior: Option<&hre_ml::OnnxBehaviorModel>,
+        onnx_calls: Option<&hre_ml::OnnxBehaviorModel>,
     ) -> AnalyzeResponse {
         let behavior_backend = onnx_behavior.map(|b| b as &dyn hre_ml::InferenceBackend);
         let behavior = hre_behavior::analyze_with_backend(
@@ -568,6 +684,25 @@ impl Engine {
                 })
                 .count();
             let mut report = hre_calls::evaluate_call_risk(&features, after_refusal);
+            if let Some(model) = onnx_calls {
+                match model.predict(&call_model_vector(events, event, behavior_config)) {
+                    Ok(probability) => {
+                        report
+                            .signal
+                            .details
+                            .insert("model_probability".into(), serde_json::json!(probability));
+                        report
+                            .signal
+                            .details
+                            .insert("rule_score".into(), serde_json::json!(report.signal.score));
+                        report.signal.score = report.signal.score.max(f64::from(probability));
+                        report.signal.backend = Backend::Onnx;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Call inference failed; using heuristic fallback")
+                    }
+                }
+            }
             if events.iter().any(|item| {
                 item.kind == StoredKind::Call
                     && item.sender == event.sender
@@ -758,7 +893,21 @@ impl Engine {
                 ("calls_pipeline".into(), "0.1.0".into()),
                 ("behavior_rules".into(), "0.1.0".into()),
                 ("fusion_rules".into(), "0.1.0".into()),
-            ]),
+            ])
+            .into_iter()
+            .chain(
+                registry
+                    .models
+                    .iter()
+                    .filter(|(_, report)| report.backend == Backend::Onnx)
+                    .filter_map(|(task, report)| {
+                        report
+                            .version
+                            .as_ref()
+                            .map(|version| (task.clone(), version.clone()))
+                    }),
+            )
+            .collect(),
             simulated: fused.simulated,
             degraded: fused.degraded,
             nudge: None,
@@ -772,10 +921,23 @@ impl Engine {
             "image",
             "ocr",
             "audio",
+            "text_fast",
+            "text_accurate",
+            "sentiment",
+            "embeddings",
+            "deepfake",
+            "face",
+            "tone",
         ]
         .iter()
         .map(|name| {
-            let report = self.registry.report(name);
+            let report = if *name == "text" {
+                let mut report = self.registry.report("text_fine_tuned");
+                report.name = "text".into();
+                report
+            } else {
+                self.registry.report(name)
+            };
             ModelHealth {
                 name: report.name,
                 version: report.version,
@@ -1050,4 +1212,52 @@ fn refusal_active(markers: &[StoredEvent]) -> bool {
             .filter(|e| e.channel == "block" || e.channel == "unblock")
             .max_by_key(|e| (e.timestamp_ms, &e.event_id))
             .is_some_and(|e| e.channel == "block")
+}
+
+#[cfg(test)]
+mod call_model_tests {
+    use super::*;
+    #[test]
+    fn call_vector_preserves_order_direction_time_and_reciprocity() {
+        let current = StoredEvent {
+            kind: StoredKind::Call,
+            sender: "sender".into(),
+            recipient: "recipient".into(),
+            timestamp_ms: 86_400_000,
+            after_refusal: true,
+            ..Default::default()
+        };
+        let answered = StoredEvent {
+            answered: true,
+            after_refusal: false,
+            duration_s: 120.0,
+            timestamp_ms: current.timestamp_ms - 7_200_000,
+            ..current.clone()
+        };
+        let reverse = StoredEvent {
+            sender: current.recipient.clone(),
+            recipient: current.sender.clone(),
+            answered: true,
+            ..current.clone()
+        };
+        let future = StoredEvent {
+            timestamp_ms: current.timestamp_ms + 1,
+            ..current.clone()
+        };
+        let expired = StoredEvent {
+            timestamp_ms: -1,
+            ..current.clone()
+        };
+        let config = hre_behavior::BehaviorConfig {
+            recipient_utc_offset_minutes: 0,
+            ..Default::default()
+        };
+        let vector = call_model_vector(
+            &[current.clone(), answered, reverse, future, expired],
+            &current,
+            &config,
+        );
+        assert_eq!(&vector[..7], &[1.0, 2.0, 1.0, 2.0, 1.0, 120.0, 1.0]);
+        assert!((vector[7] - 1.0 / 3.0).abs() < f32::EPSILON);
+    }
 }

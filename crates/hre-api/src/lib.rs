@@ -1,5 +1,6 @@
 //! HTTP boundary: authentication, validation, draft isolation and generated OpenAPI.
 mod calls;
+mod dashboard;
 mod engine;
 pub mod mock;
 
@@ -32,6 +33,7 @@ struct AppState {
     engine: engine::Engine,
     alerts: broadcast::Sender<AnalyzeResponse>,
     rate: Mutex<BTreeMap<String, (Instant, u32)>>,
+    sessions: Mutex<BTreeMap<String, Instant>>,
 }
 type Shared = Arc<AppState>;
 
@@ -59,6 +61,7 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         engine,
         alerts,
         rate: Mutex::new(BTreeMap::new()),
+        sessions: Mutex::new(BTreeMap::new()),
     });
     Ok(Router::new()
         .route("/v1/health", get(health))
@@ -102,7 +105,14 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/openapi.json", get(schema))
         .route("/docs", get(docs))
         .route("/", get(dashboard_redirect))
-        .merge(hre_dashboard::router())
+        .route(
+            "/dashboard/login",
+            get(dashboard::login_page).post(dashboard::login),
+        )
+        .route("/dashboard/logout", post(dashboard::logout))
+        .merge(hre_dashboard::router().layer(axum::Extension(
+            hre_dashboard::backend::DashboardState(state.clone()),
+        )))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(1024 * 1024))
@@ -161,7 +171,8 @@ async fn dashboard_redirect() -> impl IntoResponse {
 
 async fn authorize(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    if path.starts_with("/dashboard")
+    if path.starts_with("/dashboard/static/")
+        || path == "/dashboard/login"
         || matches!(path, "/" | "/v1/health" | "/openapi.json" | "/docs")
     {
         return next.run(request).await;
@@ -178,6 +189,17 @@ async fn authorize(State(state): State<Shared>, request: Request, next: Next) ->
         .fold(false, |found, token| {
             secret_matches(token, moderator.unwrap_or("")) | found
         });
+    let session = dashboard::session_token(&request);
+    let session_ok = dashboard::valid_session(&state, session.as_deref()).await;
+    if session_ok
+        && !moderator_ok
+        && request.method() != axum::http::Method::GET
+        && !dashboard::same_origin(&request)
+    {
+        return ApiError::new(StatusCode::FORBIDDEN, "same-origin request required")
+            .into_response();
+    }
+    let moderator_ok = moderator_ok || session_ok;
     let key = request
         .headers()
         .get("x-api-key")
@@ -189,9 +211,13 @@ async fn authorize(State(state): State<Shared>, request: Request, next: Next) ->
         .iter()
         .fold(false, |found, token| secret_matches(token, key) | found);
     let restricted = path.starts_with("/v1/admin/")
+        || path.starts_with("/dashboard")
         || path.starts_with("/v1/slang/")
         || matches!(path, "/v1/alerts" | "/v1/stream/alerts");
     if !(moderator_ok || (!restricted && key_ok)) {
+        if path.starts_with("/dashboard") && request.method() == axum::http::Method::GET {
+            return axum::response::Redirect::to("/dashboard/login").into_response();
+        }
         return ApiError::new(
             StatusCode::UNAUTHORIZED,
             "valid client API key or moderator bearer token required",
@@ -219,7 +245,11 @@ async fn authorize(State(state): State<Shared>, request: Request, next: Next) ->
         return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
     drop(rate);
-    next.run(request).await
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 fn secret_matches(expected: &str, provided: &str) -> bool {

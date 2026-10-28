@@ -12,6 +12,7 @@ use tower::ServiceExt;
 async fn app() -> Router {
     hre_api::router(
         EngineConfig {
+            models_dir: "target/model-free-api-test-artifacts".into(),
             salt: "01234567890123456789012345678901".into(),
             api_keys: vec!["key".into()],
             moderator_tokens: vec!["mod".into()],
@@ -282,6 +283,7 @@ async fn alerts_protection_and_retries_survive_router_restart() {
     let path = std::env::temp_dir().join(format!("hre-restart-{}.sqlite", uuid::Uuid::new_v4()));
     let url = format!("sqlite:{}", path.to_string_lossy().replace('\\', "/"));
     let config = EngineConfig {
+        models_dir: "target/model-free-api-test-artifacts".into(),
         salt: "01234567890123456789012345678901".into(),
         api_keys: vec!["key".into()],
         moderator_tokens: vec!["mod".into()],
@@ -336,6 +338,7 @@ async fn persistence_uses_pseudonyms_and_never_stores_drafts_or_message_text() {
     let url = format!("sqlite:{}", path.to_string_lossy().replace('\\', "/"));
     let app = hre_api::router(
         EngineConfig {
+            models_dir: "target/model-free-api-test-artifacts".into(),
             salt: "01234567890123456789012345678901".into(),
             api_keys: vec!["key".into()],
             moderator_tokens: vec!["mod".into()],
@@ -428,6 +431,7 @@ async fn scenario_3_unsolicited_explicit_image_proxy_triggers_high_and_blur_medi
     // 1. With demo_mode = true: hash override matches, triggering High tier and BlurMedia, labeled simulated: true
     let demo_app = hre_api::router(
         EngineConfig {
+            models_dir: "target/model-free-api-test-artifacts".into(),
             salt: "01234567890123456789012345678901".into(),
             api_keys: vec!["key".into()],
             moderator_tokens: vec!["mod".into()],
@@ -468,6 +472,7 @@ async fn scenario_3_unsolicited_explicit_image_proxy_triggers_high_and_blur_medi
     // 2. With demo_mode = false: same image receives NO forced score and remains Low / Roadmap
     let prod_app = hre_api::router(
         EngineConfig {
+            models_dir: "target/model-free-api-test-artifacts".into(),
             salt: "01234567890123456789012345678901".into(),
             api_keys: vec!["key".into()],
             moderator_tokens: vec!["mod".into()],

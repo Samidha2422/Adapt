@@ -3,13 +3,13 @@
 pub fn render_demo_page() -> String {
     r##"<div class="page-header">
   <div>
-    <h1 class="page-title">Demo Scenario Control Center</h1>
-    <p class="page-subtitle">Execute and evaluate all 9 end-to-end harassment risk scenarios with real-time tier assertions and live feedback.</p>
+    <h1 class="page-title">Demo Scenarios</h1>
+    <span class="badge badge-simulated">Scenario reference; no measured results</span>
   </div>
 
   <div style="display: flex; gap: 12px;">
-    <button type="button" class="btn btn-danger" hx-post="/v1/admin/demo/reset" hx-swap="none" onclick="showToast('Demo state and mock storage reset.')">
-      Reset Demo State
+    <button type="button" class="btn btn-danger" hx-post="/v1/admin/demo/reset" hx-swap="none" hx-on::after-request="if(event.detail.successful) showToast('Demo state reset.')" onclick="if(!confirm('Reset demo state and stored events?')) return false;">
+      Reset State
     </button>
   </div>
 </div>
@@ -17,7 +17,7 @@ pub fn render_demo_page() -> String {
 <div class="card">
   <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px;">
     <h2 class="card-title" style="margin-bottom: 0;">9 Standardized Benchmark Scenarios</h2>
-    <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Click "Trigger Scenario" to evaluate live through the engine</span>
+    <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Run fixtures with the logged demo-seed recipe</span>
   </div>
 
   <div class="table-container">
@@ -39,7 +39,7 @@ pub fn render_demo_page() -> String {
           <td><strong>Polite Stalker</strong></td>
           <td>80 friendly messages, no replies, continues post-block</td>
           <td><span class="badge badge-urgent">Urgent / High</span> (Rises post-block)</td>
-          <td><span class="badge badge-built">Live NLP + Velocity</span></td>
+          <td><span class="badge badge-roadmap">Runtime backend required</span></td>
           <td><button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 4px 10px;" onclick="triggerScenario(1, 'Polite Stalker')">Trigger</button></td>
         </tr>
 
@@ -129,10 +129,7 @@ pub fn render_demo_page() -> String {
 
 <script>
   function triggerScenario(num, name) {
-    showToast('Executing Scenario ' + num + ': ' + name + '...');
-    setTimeout(() => {
-      showToast('Scenario ' + num + ' completed successfully: Matched expected tier!');
-    }, 900);
+    showToast('Scenario ' + num + ' is a reference. Use the logged demo-seed recipe to run it.');
   }
 </script>"##
         .to_string()

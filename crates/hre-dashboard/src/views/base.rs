@@ -81,20 +81,18 @@ pub fn render_page(title: &str, active_nav: &str, content: &str) -> String {
     <header class="top-bar">
       <a href="/dashboard" class="top-bar-brand">
         <div class="top-bar-logo">A</div>
-        <span class="top-bar-title">Adapt Harassment Engine</span>
+        <span class="top-bar-title">Adapt</span>
       </a>
 
       <div class="top-bar-actions">
-        <div id="connection-status" class="badge badge-built">
-          <span style="width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block;"></span>
-          Feed Active
+        <div id="connection-status" class="badge badge-roadmap" style="font-size: 11px;">
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block;"></span>
+          Stream idle
         </div>
 
-        <!-- Moderator Token Input for secure Bearer session -->
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <input type="password" id="mod-token-input" placeholder="Moderator Token" class="form-control" style="width: 140px; height: 32px; font-size: 12px;" />
-          <button type="button" class="btn btn-secondary" style="height: 32px; padding: 0 10px; font-size: 12px;" onclick="saveToken()">Set</button>
-        </div>
+        <form method="post" action="/dashboard/logout">
+          <button type="submit" class="btn btn-secondary" style="height:32px;font-size:12px;padding:0 10px">Log out</button>
+        </form>
 
         <!-- Theme Toggle -->
         <button type="button" class="btn btn-secondary" style="height: 32px; width: 32px; padding: 0;" title="Toggle Dark/Light Mode" onclick="toggleTheme()">
@@ -131,24 +129,40 @@ pub fn render_page(title: &str, active_nav: &str, content: &str) -> String {
       document.documentElement.setAttribute('data-theme', savedTheme);
     }}
 
-    // Moderator Token Storage & HTMX request injection
-    function saveToken() {{
-      const val = document.getElementById('mod-token-input').value;
-      if (val) {{
-        localStorage.setItem('adapt_mod_token', val);
-        showToast('Moderator token saved');
+    // Clear credentials retained by older dashboard versions.
+    localStorage.removeItem('adapt_mod_token');
+
+    // Global SSE connection status listeners
+    document.body.addEventListener('htmx:sseOpen', function() {{
+      const s = document.getElementById('connection-status');
+      if (s) {{
+        s.className = 'badge badge-built';
+        s.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span> Stream Connected';
       }}
-    }}
-    const savedToken = localStorage.getItem('adapt_mod_token');
-    if (savedToken) {{
-      document.getElementById('mod-token-input').value = savedToken;
+    }});
+    document.body.addEventListener('htmx:sseError', function() {{
+      const s = document.getElementById('connection-status');
+      if (s) {{
+        s.className = 'badge badge-roadmap';
+        s.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block;"></span> Stream Offline';
+      }}
+    }});
+
+
+    async function dashboardRequest(path, body) {{
+      const response = await fetch(path, {{
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(body)
+      }});
+      if (response.redirected) throw new Error('Session expired. Log in again.');
+      if (!response.ok) throw new Error('Request failed (HTTP ' + response.status + ').');
+      if (response.status === 204) return null;
+      return response.json();
     }}
 
-    document.body.addEventListener('htmx:configRequest', function(evt) {{
-      const token = localStorage.getItem('adapt_mod_token');
-      if (token) {{
-        evt.detail.headers['Authorization'] = 'Bearer ' + token;
-      }}
+    document.body.addEventListener('htmx:responseError', function() {{
+      showToast('Request failed. Your form has been preserved.');
     }});
 
     function showToast(msg) {{

@@ -159,7 +159,7 @@ pub fn render_pr_curve_svg() -> String {
 
   <!-- Operating Threshold Marker -->
   <circle cx="340" cy="46" r="5" class="marker-dot" />
-  <text x="350" y="42" font-family="system-ui, sans-serif" font-size="11px" font-weight="700" fill="var(--md-sys-color-primary, #3f51b5)">Adapt Operating Point (F1=0.91)</text>
+  <text x="330" y="42" text-anchor="end" font-family="system-ui, sans-serif" font-size="11px" font-weight="700" fill="var(--md-sys-color-primary, #3f51b5)">Adapt Operating Point (F1=0.933)</text>
 
   <!-- Legend -->
   <g transform="translate(60, 228)">
@@ -174,11 +174,11 @@ pub fn render_pr_curve_svg() -> String {
 
 /// Generates a server-rendered SVG severity and tier distribution bar.
 pub fn render_tier_distribution_svg(low: u32, review: u32, high: u32, urgent: u32) -> String {
-    let total = (low + review + high + urgent).max(1) as f64;
-    let w_low = ((low as f64 / total) * 100.0).max(1.0);
-    let w_rev = ((review as f64 / total) * 100.0).max(1.0);
-    let w_high = ((high as f64 / total) * 100.0).max(1.0);
-    let w_urg = ((urgent as f64 / total) * 100.0).max(1.0);
+    let total = (f64::from(low) + f64::from(review) + f64::from(high) + f64::from(urgent)).max(1.0);
+    let w_low = f64::from(low) / total * 100.0;
+    let w_rev = f64::from(review) / total * 100.0;
+    let w_high = f64::from(high) / total * 100.0;
+    let w_urg = f64::from(urgent) / total * 100.0;
 
     format!(
         r##"<svg viewBox="0 0 500 48" width="100%" height="48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tier Distribution Bar">

@@ -3,6 +3,7 @@
 //! real-time SSE live queue triage, incident investigation, and evaluation metrics.
 
 pub mod assets;
+pub mod backend;
 pub mod svg;
 pub mod views;
 
@@ -11,11 +12,11 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
-    Router,
+    Extension, Router,
 };
-use hre_core::{Action, AnalyzeResponse, ReviewDecision, ReviewRequest, Signals, Tier};
+use backend::DashboardState;
+use hre_core::{ReviewDecision, ReviewRequest};
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Returns the primary Axum router for the moderator dashboard and static assets.
@@ -44,6 +45,7 @@ where
         // Moderator Dashboard Views
         .route("/dashboard", get(overview_view))
         .route("/dashboard/queue", get(queue_view))
+        .route("/dashboard/queue/items", get(queue_items))
         .route("/dashboard/alerts/{id}", get(alert_detail_view))
         .route("/dashboard/alerts/{id}/review", post(review_action))
         .route("/dashboard/timelines", get(timeline_view))
@@ -64,43 +66,52 @@ where
         .route("/dashboard/alerts/{id}/review", post(review_action))
 }
 
-async fn overview_view() -> Html<String> {
-    let content = views::overview::render_overview_page();
-    Html(views::base::render_page("Overview", "overview", &content))
+async fn overview_view(
+    state: Option<Extension<DashboardState>>,
+) -> Result<Html<String>, StatusCode> {
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    let health = state.0.health().await?;
+    let alerts = state.0.alerts().await?;
+    let content = views::overview::render_overview(&health, &alerts);
+    Ok(Html(views::base::render_page(
+        "Overview", "overview", &content,
+    )))
 }
 
-async fn queue_view() -> Html<String> {
-    let content = views::queue::render_queue_page(&[]);
-    Html(views::base::render_page("Live Queue", "queue", &content))
+async fn queue_view(state: Option<Extension<DashboardState>>) -> Result<Html<String>, StatusCode> {
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    let alerts = state.0.alerts().await?;
+    let content = views::queue::render_queue_page(&alerts);
+    Ok(Html(views::base::render_page(
+        "Live Queue",
+        "queue",
+        &content,
+    )))
 }
 
-async fn alert_detail_view(Path(id): Path<String>) -> Result<Html<String>, StatusCode> {
+async fn queue_items(state: Option<Extension<DashboardState>>) -> Result<Html<String>, StatusCode> {
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    let alerts = state.0.alerts().await?;
+    Ok(Html(views::queue::render_queue_items(&alerts)))
+}
+
+async fn alert_detail_view(
+    Path(id): Path<String>,
+    state: Option<Extension<DashboardState>>,
+) -> Result<Html<String>, StatusCode> {
     let parsed_uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
 
-    // Return a structured fixture for the requested alert
-    let alert = AnalyzeResponse {
-        event_id: parsed_uuid,
-        severity: 85,
-        tier: Tier::High,
-        reasons: vec![hre_core::Reason {
-            code: "harassment.unsolicited_contact".into(),
-            text: "Repeated persistent messages following explicit stop notification".into(),
-            weight: 0.85,
-            evidence: BTreeMap::new(),
-        }],
-        signals: Signals::default(),
-        recommended_action: Action::Throttle,
-        secondary_actions: vec![],
-        alert_id: Some(parsed_uuid),
-        latency_ms: 18,
-        model_versions: BTreeMap::new(),
-        simulated: true,
-        degraded: vec![],
-        nudge: None,
-    };
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    let alert = state
+        .0
+        .alerts()
+        .await?
+        .into_iter()
+        .find(|alert| alert.alert_id == Some(parsed_uuid))
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     let content = views::detail::render_detail_page(&alert);
     Ok(Html(views::base::render_page(
@@ -118,9 +129,10 @@ pub struct ReviewForm {
 
 async fn review_action(
     Path(id): Path<String>,
+    state: Option<Extension<DashboardState>>,
     Form(form): Form<ReviewForm>,
 ) -> Result<Response, StatusCode> {
-    let _parsed_uuid = match Uuid::parse_str(&id) {
+    let parsed_uuid = match Uuid::parse_str(&id) {
         Ok(u) => u,
         Err(_) => return Err(StatusCode::BAD_REQUEST),
     };
@@ -134,19 +146,12 @@ async fn review_action(
 
     let review_req = ReviewRequest {
         decision,
-        note: form.note.clone(),
+        note: form.note,
     };
 
-    let confirmation_html = format!(
-        r#"<div style="padding: 16px; background: var(--hre-status-built-bg); border: 1px solid var(--hre-status-built); border-radius: 8px; color: var(--hre-status-built);">
-  <strong>Decision Recorded: {:?}</strong>
-  <p style="font-size: 13px; margin-top: 4px; color: var(--md-sys-color-on-surface);">
-    Action recorded in cryptographic audit trail. Note: {}
-  </p>
-</div>"#,
-        review_req.decision,
-        form.note.as_deref().unwrap_or("None")
-    );
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    state.0.review(parsed_uuid, review_req).await?;
+    let confirmation_html = r#"<div class="card" role="status">Decision recorded.</div>"#;
 
     Ok(Html(confirmation_html).into_response())
 }
@@ -165,13 +170,17 @@ async fn slang_view() -> Html<String> {
     ))
 }
 
-async fn metrics_view() -> Html<String> {
-    let content = views::metrics::render_metrics_page();
-    Html(views::base::render_page(
+async fn metrics_view(
+    state: Option<Extension<DashboardState>>,
+) -> Result<Html<String>, StatusCode> {
+    let state = state.ok_or(StatusCode::SERVICE_UNAVAILABLE)?.0;
+    let metrics = state.0.metrics().await?;
+    let content = views::metrics::render_metrics(metrics.as_ref());
+    Ok(Html(views::base::render_page(
         "Evaluation Metrics",
         "metrics",
         &content,
-    ))
+    )))
 }
 
 async fn calls_view() -> Html<String> {

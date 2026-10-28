@@ -510,15 +510,19 @@ pub fn analyze_with_backend(
         && after == 0
         && features.get("since_refusal_hours") < 0.0;
     let mut onnx_active = false;
+    let mut inference_failed = false;
     let base_prob = if let Some(b) = backend {
         match b.predict(&features.vector()) {
-            Ok(p) => {
+            Ok(p) if p.is_finite() && (0.0..=1.0).contains(&p) => {
                 if b.backend() == Backend::Onnx {
                     onnx_active = true;
                 }
                 p
             }
-            Err(_) => probability(&features, c),
+            _ => {
+                inference_failed = true;
+                probability(&features, c)
+            }
         }
     } else {
         probability(&features, c)
@@ -601,7 +605,12 @@ pub fn analyze_with_backend(
         "window_seconds".into(),
         serde_json::json!(c.pile_on_window_seconds),
     );
-    let mut reasons = occlusion_attribution(&features, c, 3);
+    // Logistic occlusion cannot explain predictions made by a tree ensemble.
+    let mut reasons = if onnx_active {
+        Vec::new()
+    } else {
+        occlusion_attribution(&features, c, 3)
+    };
     if streak >= c.unreplied_review_count && !healthy {
         reasons.push(reason(
             "PERSISTENT_CONTACT",
@@ -642,8 +651,13 @@ pub fn analyze_with_backend(
         ));
     }
     let mut degraded = Vec::new();
-    if !onnx_active {
+    if inference_failed {
+        degraded.push("behavior_msg.inference_failed".into());
+    } else if backend.is_none() {
         degraded.push("behavior_msg.onnx_missing".into());
+    }
+    if onnx_active {
+        degraded.push("behavior.model_attribution_unavailable".into());
     }
     degraded.push("behavior.evasion_similarity_unavailable".into());
     degraded.push("pile_on.ewma_baseline_unavailable".into());

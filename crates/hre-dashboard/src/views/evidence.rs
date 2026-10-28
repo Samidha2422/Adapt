@@ -3,39 +3,24 @@
 pub fn render_evidence_page() -> String {
     r##"<div class="page-header">
   <div>
-    <h1 class="page-title">Cryptographic Evidence Export</h1>
-    <p class="page-subtitle">Export tamper-evident, SHA-256 hash-chained incident records with HMAC server signatures and BSA 2023 certificate draft aid.</p>
+    <h1 class="page-title">Evidence Export</h1>
   </div>
 
   <div>
-    <span class="badge badge-built" style="font-size: 13px;">HMAC-SHA256 Integrity Verified</span>
+    <span class="badge badge-roadmap">Verify an exported bundle below</span>
   </div>
 </div>
 
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;">
   <!-- Export Request Form -->
   <div class="card">
-    <h2 class="card-title">Generate Incident Evidence Bundle</h2>
-    <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 16px;">
-      Compiles chronological interaction records, masked transcripts, OCR hashes, and behavioral velocity metrics into a verifiable hash-chain manifest.
-    </p>
+    <h2 class="card-title">Generate Evidence Bundle</h2>
 
-    <form id="evidence-form" hx-post="/v1/evidence/export" hx-target="#export-result" hx-swap="innerHTML">
+    <form id="evidence-form" onsubmit="exportEvidence(event)">
       <div class="form-group">
         <label class="form-label" for="subject-id">Subject / Victim Pseudonymous ID</label>
-        <input type="text" id="subject-id" name="subject_id" value="sub_9a2f7c4e11" class="form-control" required />
+        <input type="text" id="subject-id" name="subject_id" class="form-control" required />
       </div>
-
-      <div class="form-group">
-        <label class="form-label" for="from-date">Date Range Start (UTC)</label>
-        <input type="date" id="from-date" name="from_date" value="2026-10-01" class="form-control" />
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="to-date">Date Range End (UTC)</label>
-        <input type="date" id="to-date" name="to_date" value="2026-10-28" class="form-control" />
-      </div>
-
       <button type="submit" class="btn btn-primary" style="width: 100%;">
         Export Hash-Chained Bundle (JSON + HTML)
       </button>
@@ -46,15 +31,12 @@ pub fn render_evidence_page() -> String {
 
   <!-- Verification Tool -->
   <div class="card">
-    <h2 class="card-title">Verify Bundle Cryptographic Integrity</h2>
-    <p style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-bottom: 16px;">
-      Validates the sequential SHA-256 hash chain and checks the server's HMAC signature to prove zero post-export tampering.
-    </p>
+    <h2 class="card-title">Verify Bundle Integrity</h2>
 
-    <form id="verify-form" hx-post="/v1/evidence/verify" hx-target="#verify-result" hx-swap="innerHTML">
+    <form id="verify-form" onsubmit="verifyEvidence(event)">
       <div class="form-group">
-        <label class="form-label" for="export-json">Paste Export JSON or Manifest Hash</label>
-        <textarea id="export-json" name="manifest_json" class="form-control" rows="5" placeholder='{"manifest_hash": "e3b0c44298fc...", "signature": "..."}'></textarea>
+        <label class="form-label" for="export-json">Paste Complete Export JSON</label>
+        <textarea id="export-json" name="manifest_json" class="form-control" rows="5" required></textarea>
       </div>
 
       <button type="submit" class="btn btn-secondary" style="width: 100%;">
@@ -81,6 +63,46 @@ pub fn render_evidence_page() -> String {
     <span>Emergency Police: <strong style="color: var(--md-sys-color-primary);">112</strong></span>
     <span>Intimate Image Abuse Shield: <strong style="color: var(--md-sys-color-primary);">StopNCII.org</strong></span>
   </div>
-</div>"##
+</div>
+<script>
+async function exportEvidence(event) {
+  event.preventDefault();
+  const form = event.target;
+  const result = document.getElementById('export-result');
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const data = await dashboardRequest('/v1/evidence/export', { subject_id: form.elements.subject_id.value });
+    const pre = document.createElement('pre');
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.textContent = JSON.stringify(data, null, 2);
+    const printable = document.createElement('a');
+    printable.href = '/v1/evidence/' + encodeURIComponent(form.elements.subject_id.value) + '/html';
+    printable.className = 'btn btn-secondary';
+    printable.textContent = 'Printable HTML';
+    result.replaceChildren(printable, pre);
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function verifyEvidence(event) {
+  event.preventDefault();
+  const result = document.getElementById('verify-result');
+  const button = event.target.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    const bundle = JSON.parse(event.target.elements.manifest_json.value);
+    const response = await dashboardRequest('/v1/evidence/verify', bundle);
+    result.textContent = response.valid === true ? 'Bundle integrity verified.' : 'Bundle integrity invalid.';
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+</script>"##
         .to_string()
 }

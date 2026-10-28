@@ -4,12 +4,12 @@ pub fn render_timeline_page() -> String {
     r##"<div class="page-header">
   <div>
     <h1 class="page-title">Subject Interaction Timeline</h1>
-    <p class="page-subtitle">Directional message frequency, unanswered call streaks, and post-block contact escalation.</p>
+    <span class="badge badge-simulated">Simulated example</span>
   </div>
 
   <div style="display: flex; gap: 8px;">
     <input type="text" placeholder="Subject Pair Hash..." value="pair:9a2f7c..4e11" class="form-control" style="width: 200px; height: 36px; font-size: 13px;" />
-    <button type="button" class="btn btn-primary" style="height: 36px;">Load Pair</button>
+    <button type="button" class="btn btn-primary" style="height: 36px;" disabled title="Pair timeline API integration unavailable">Load Pair</button>
   </div>
 </div>
 

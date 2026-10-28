@@ -1,5 +1,12 @@
 # Skills used
 
+## Live integration (2026-10-29)
+
+Used the installed `ponytail` skill for focused integration, `rust-best-practices`
+for typed API/runtime boundaries and error handling, and
+`verification-before-completion` for delegated logged checks. Execution results
+are recorded separately; skill usage is not evidence that the models ran.
+
 B3/B4 implementation session (2026-10-28): read
 `C:/Users/Vibhav/.agents/skills/rust-best-practices/SKILL.md` and relevant
 coding/Clippy/error/testing/documentation reference chapters, plus

@@ -3,14 +3,14 @@
 pub fn render_slang_page() -> String {
     r##"<div class="page-header">
   <div>
-    <h1 class="page-title">Slang & Evolving Harm Intelligence</h1>
-    <p class="page-subtitle">Review emerging harassment colloquialisms, approve regional slang terms, and manage the dynamic lexical retraining pipeline.</p>
+    <h1 class="page-title">Slang Intelligence</h1>
+    <span class="badge badge-simulated">Simulated examples; changes are local previews</span>
   </div>
 
   <div style="display: flex; gap: 12px;">
     <button type="button" class="btn btn-primary" onclick="showAddTermModal()">+ Add Term</button>
-    <button type="button" class="btn btn-secondary" hx-post="/v1/slang/retrain" hx-swap="none" onclick="showToast('Retraining pipeline triggered...')">Trigger Retrain</button>
-    <button type="button" class="btn btn-secondary" hx-post="/v1/slang/rollback" hx-swap="none" onclick="showToast('Rolling back to previous slang lexicon...')">Rollback</button>
+    <button type="button" class="btn btn-secondary" hx-post="/v1/slang/retrain" hx-swap="none" hx-on::after-request="if(event.detail.successful) showToast('Retrain request accepted.')">Trigger Retrain</button>
+    <button type="button" class="btn btn-secondary" hx-post="/v1/slang/rollback" hx-swap="none" hx-on::after-request="if(event.detail.successful) showToast('Rollback request accepted.')">Rollback</button>
   </div>
 </div>
 
@@ -18,7 +18,7 @@ pub fn render_slang_page() -> String {
 <div class="card">
   <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px;">
     <h2 class="card-title" style="margin-bottom: 0;">Pending Slang Candidates for Moderator Approval</h2>
-    <span style="font-size: 12px; color: var(--md-sys-color-on-surface-variant);">Scenario 8 Active: Dynamic lexicon updates</span>
+    <span class="badge badge-simulated">Example candidates</span>
   </div>
 
   <div class="table-container">
@@ -82,7 +82,7 @@ pub fn render_slang_page() -> String {
 
 <!-- Active Approved Slang Lexicon -->
 <div class="card">
-  <h2 class="card-title">Active Harassment Lexicon Sample</h2>
+  <h2 class="card-title">Example Lexicon</h2>
   <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;">
     <span class="badge badge-built">tharki (Weight: 0.85)</span>
     <span class="badge badge-built">kutte (Weight: 0.70)</span>
@@ -96,19 +96,23 @@ pub fn render_slang_page() -> String {
 
 <script>
   function confirmTerm(rowId, term) {
-    document.getElementById(rowId).style.opacity = '0.3';
-    showToast('Confirmed slang term: ' + term + '. Next matching message will be flagged.');
+    const row = document.getElementById(rowId);
+    if (row) {
+      const actionsCell = row.querySelector('td:last-child');
+      if (actionsCell) actionsCell.innerHTML = '<span class="badge badge-built">Approved</span>';
+    }
+    showToast('Preview only; no slang term persisted.');
   }
 
   function rejectTerm(rowId) {
     document.getElementById(rowId).remove();
-    showToast('Rejected slang term candidate.');
+    showToast('Preview only; no candidate changed in the engine.');
   }
 
   function showAddTermModal() {
     const term = prompt('Enter new slang term to register:');
     if (term) {
-      showToast('Term \"' + term + '\" added to slang registry.');
+      showToast('Preview only; no slang term persisted.');
     }
   }
 </script>"##
