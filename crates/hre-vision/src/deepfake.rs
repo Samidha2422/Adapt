@@ -23,12 +23,20 @@ pub fn evaluate_deepfake_composite(
     deepfake_score: f64,
     nsfw_score: f64,
 ) -> DeepfakeAssessment {
-    let deepfake = deepfake_score.clamp(0.0, 1.0);
-    let nsfw = nsfw_score.clamp(0.0, 1.0);
+    let finite_score = |score: f64| {
+        if score.is_finite() {
+            score.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let deepfake = finite_score(deepfake_score);
+    let nsfw = finite_score(nsfw_score);
 
     let synthetic_intimate = face_detected && deepfake >= 0.70 && nsfw >= 0.50;
 
     let mut details = BTreeMap::new();
+    details.insert("simulated".into(), serde_json::json!(true));
     details.insert("face_detected".into(), serde_json::json!(face_detected));
     details.insert("deepfake_score".into(), serde_json::json!(deepfake));
     details.insert("nsfw_score".into(), serde_json::json!(nsfw));
@@ -74,8 +82,8 @@ pub fn evaluate_deepfake_composite(
             low_confidence: false,
             signal: Signal {
                 score: 0.0,
-                label: "face_benign".into(),
-                status: Status::Built,
+                label: "simulated_composite_no_match".into(),
+                status: Status::Simulated,
                 backend: Backend::Heuristic,
                 confidence: 0.0,
                 details,

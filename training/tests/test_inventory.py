@@ -91,6 +91,19 @@ class TestDatasetInventory(unittest.TestCase):
         self.assertGreaterEqual(counts["total"], 6)
         self.assertGreaterEqual(counts["synthetic"], 1)
 
+    def test_unreviewed_candidates_cannot_be_admitted(self):
+        for record in self.inventory:
+            with self.subTest(dataset=record["id"]), self.assertRaises(DownloadNotPermittedError):
+                download_dataset(record["id"], dest_dir=ALLOWED_RAW_DIR,
+                                 opt_in=True, inventory=self.inventory)
+
+    def test_malformed_records_raise_provenance_errors(self):
+        for record in ({}, None, {**self.inventory[0], "synthetic": "false"},
+                       {**self.inventory[0], "language": [1]},
+                       {**self.inventory[0], "source_url": None}):
+            with self.subTest(record=record), self.assertRaises(ProvenanceError):
+                verify_all_records([record])
+
 
 if __name__ == "__main__":
     unittest.main()

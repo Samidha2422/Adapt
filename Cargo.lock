@@ -793,6 +793,7 @@ dependencies = [
  "axum",
  "chrono",
  "hre-behavior",
+ "hre-calls",
  "hre-core",
  "hre-fusion",
  "hre-ml",
@@ -814,6 +815,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hre-audio"
+version = "0.1.0"
+dependencies = [
+ "hre-core",
+ "proptest",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "hre-behavior"
 version = "0.1.0"
 dependencies = [
@@ -829,6 +840,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hre-calls"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hre-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "hre-core"
 version = "0.1.0"
 dependencies = [
@@ -841,6 +865,21 @@ dependencies = [
  "toml",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "hre-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hre-behavior",
+ "hre-core",
+ "hre-fusion",
+ "hre-store",
+ "hre-text",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

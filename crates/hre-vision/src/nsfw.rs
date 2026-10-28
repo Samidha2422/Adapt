@@ -32,8 +32,10 @@ impl HeuristicImageBackend {
     }
 
     pub fn with_override(mut self, sha256: &str, score: f64) -> Self {
-        self.overrides
-            .insert(sha256.to_lowercase(), score.clamp(0.0, 1.0));
+        if score.is_finite() {
+            self.overrides
+                .insert(sha256.to_lowercase(), score.clamp(0.0, 1.0));
+        }
         self
     }
 
@@ -47,7 +49,7 @@ impl HeuristicImageBackend {
         let mut backend = Self::new();
         if let Ok(doc) = doc {
             for (hash, score) in doc.assets {
-                backend.overrides.insert(hash.to_lowercase(), score);
+                backend = backend.with_override(&hash, score);
             }
         }
         backend
@@ -81,6 +83,8 @@ impl ImageBackend for HeuristicImageBackend {
             details.insert("sha256".into(), serde_json::json!(sha256));
             details.insert("p_hash".into(), serde_json::json!(p_hash));
             details.insert("override_applied".into(), serde_json::json!(true));
+            details.insert("simulated".into(), serde_json::json!(true));
+            details.insert("hash_kind".into(), serde_json::json!("encoded_byte_proxy"));
 
             Ok(ImageAnalysis {
                 signal: Signal {
@@ -103,13 +107,14 @@ impl ImageBackend for HeuristicImageBackend {
             details.insert("sha256".into(), serde_json::json!(sha256));
             details.insert("p_hash".into(), serde_json::json!(p_hash));
             details.insert("onnx_missing".into(), serde_json::json!(true));
+            details.insert("hash_kind".into(), serde_json::json!("encoded_byte_proxy"));
 
             Ok(ImageAnalysis {
                 signal: Signal {
                     score: 0.0,
-                    label: "image_benign".into(),
-                    status: Status::Built,
-                    backend: Backend::Heuristic,
+                    label: "image_unavailable".into(),
+                    status: Status::Roadmap,
+                    backend: Backend::Disabled,
                     confidence: 0.0,
                     details,
                 },
@@ -119,7 +124,7 @@ impl ImageBackend for HeuristicImageBackend {
                 simulated: false,
                 degraded: vec![
                     "image.onnx_missing".into(),
-                    "image.heuristic_fallback".into(),
+                    "image.inference_unavailable".into(),
                 ],
             })
         }

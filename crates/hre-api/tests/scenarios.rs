@@ -381,7 +381,7 @@ async fn persistence_uses_pseudonyms_and_never_stores_drafts_or_message_text() {
 }
 
 #[tokio::test]
-async fn scenario_3_cyberflashing_proxy_is_high_and_blurred() {
+async fn caption_proxy_keywords_do_not_fabricate_image_scores() {
     let app = app().await;
     let input = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -398,20 +398,16 @@ async fn scenario_3_cyberflashing_proxy_is_high_and_blurred() {
         }
     });
     let response = analyze(&app, input).await;
-    assert_eq!(response.tier, Tier::High);
-    assert_eq!(response.recommended_action, Action::BlurMedia);
-    assert!(response.simulated);
-    assert!(
-        response
-            .reasons
-            .iter()
-            .any(|r| r.code.contains("UNSOLICITED_EXPLICIT_MEDIA")
-                || r.code.contains("REPORTED_HASH"))
-    );
+    assert_eq!(response.tier, Tier::Low);
+    assert_eq!(response.signals.image.score, 0.0);
+    assert_eq!(response.signals.ocr.score, 0.0);
+    assert!(!response.simulated);
+    assert_eq!(response.signals.image.status, hre_core::Status::Roadmap);
+    assert!(!response.signals.image.details.contains_key("sha256"));
 }
 
 #[tokio::test]
-async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
+async fn image_caption_threat_is_text_and_never_ocr() {
     let app = app().await;
     let input = json!({
         "event_id": uuid::Uuid::new_v4(),
@@ -429,10 +425,9 @@ async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
     });
     let response = analyze(&app, input).await;
     assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
-    assert_eq!(response.recommended_action, Action::BlurMedia);
-    assert!(response
-        .reasons
-        .iter()
-        .any(|r| r.code == "OCR_ABUSE" || r.code.contains("THREAT")));
-    assert!(response.signals.ocr.score >= 0.5);
+    assert_eq!(response.recommended_action, Action::Escalate);
+    assert!(response.reasons.iter().any(|r| r.code.contains("THREAT")));
+    assert_eq!(response.signals.ocr.score, 0.0);
+    assert!(response.signals.text.score >= 0.9);
+    assert!(!response.simulated);
 }

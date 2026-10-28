@@ -20,6 +20,7 @@ hre-fusion = { path = "../hre-fusion" }
 hre-ml = { path = "../hre-ml" }
 hre-text = { path = "../hre-text" }
 hre-vision = { path = "../hre-vision" }
+hre-calls = { path = "../hre-calls" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true

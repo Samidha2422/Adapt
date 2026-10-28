@@ -42,6 +42,7 @@ try {
             'models-verify' { & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/models-verify.ps1; break }
             'models-verify-install' { & python -m pip install --only-binary=:all: --target target/model-verify-deps onnx==1.20.1; break }
             'models-verify-test' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps'); & python -m unittest discover -s scripts/tests -p 'test_verify_models.py'; break }
+            'training-test' { $env:PYTHONPATH = (Join-Path $root 'training/src'); & python -m unittest discover -s training/tests; break }
             default {
                 if ($Recipe -like 'train-*') {
                     $script = $Recipe.Substring(6).Replace('-', '_')

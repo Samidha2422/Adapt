@@ -2,22 +2,21 @@
 
 Card A1 deliverable:
 - Tracks candidate training and evaluation datasets without downloading unapproved media.
-- Verifies license state, source URLs, language coverage, and partition assignments.
-- Enforces disjoint split names between training (Generator A) and evaluation (Generator B / held-out).
+- Validates declared metadata, not license clearance, language coverage, or sample independence.
+- Records partition assignments; content-level leakage checking is not implemented.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 DEFAULT_DATASETS_FILE = Path(__file__).resolve().parent.parent.parent / "datasets.json"
-ALLOWED_RAW_DIR = Path("data/raw").resolve()
+ALLOWED_RAW_DIR = (Path(__file__).resolve().parents[3] / "data" / "raw").resolve()
 
 
 class ProvenanceError(Exception):
@@ -45,6 +44,8 @@ def load_inventory(path: Optional[Path | str] = None) -> List[Dict[str, Any]]:
 
 def verify_record(record: Dict[str, Any]) -> None:
     """Validates an individual dataset provenance record."""
+    if not isinstance(record, dict):
+        raise ProvenanceError("Dataset record must be an object")
     required_keys = {
         "id",
         "name",
@@ -59,9 +60,16 @@ def verify_record(record: Dict[str, Any]) -> None:
     if missing:
         raise ProvenanceError(f"Dataset {record.get('id', 'unknown')} missing required keys: {sorted(missing)}")
 
+    for key in ("id", "name", "source_url", "license_state", "intended_split", "status"):
+        if not isinstance(record[key], str) or not record[key].strip():
+            raise ProvenanceError(f"Dataset {key} must be a nonempty string")
+    if not isinstance(record["synthetic"], bool):
+        raise ProvenanceError("Dataset synthetic must be a boolean")
+
     # Check URL format
     url = record["source_url"]
-    if not (url.startswith("http://") or url.startswith("https://") or url.startswith("internal://")):
+    parsed_url = urllib.parse.urlparse(url)
+    if parsed_url.scheme not in {"http", "https", "internal"} or not parsed_url.netloc:
         raise ProvenanceError(f"Dataset {record['id']} has invalid source URL: {url}")
 
     # Check license state
@@ -76,7 +84,7 @@ def verify_record(record: Dict[str, Any]) -> None:
 
     # Check language
     lang = record["language"]
-    if not isinstance(lang, list) or not lang:
+    if not isinstance(lang, list) or not lang or any(not isinstance(x, str) or not x.strip() for x in lang):
         raise ProvenanceError(f"Dataset {record['id']} must define non-empty language list")
 
 
@@ -86,10 +94,10 @@ def verify_all_records(records: List[Dict[str, Any]]) -> Dict[str, int]:
     seen_ids = set()
 
     for r in records:
+        verify_record(r)
         if r["id"] in seen_ids:
             raise ProvenanceError(f"Duplicate dataset id: {r['id']}")
         seen_ids.add(r["id"])
-        verify_record(r)
 
         if r["intended_split"] == "train":
             counts["train"] += 1
@@ -129,13 +137,15 @@ def download_dataset(
             )
 
     records = inventory if inventory is not None else load_inventory()
+    verify_all_records(records)
     match = next((r for r in records if r["id"] == dataset_id), None)
     if not match:
         raise KeyError(f"Dataset id not found in inventory: {dataset_id}")
 
-    if match.get("status") == "candidate_restricted":
-        raise PermissionError(
-            f"Dataset {dataset_id} license is marked restricted ({match['license_state']}); download requires prior authorization."
+    verify_record(match)
+    if match.get("status") != "verified" or not match.get("license_review"):
+        raise DownloadNotPermittedError(
+            f"Dataset {dataset_id} has no verified admission and license review; download blocked."
         )
 
     # Offline simulation / stub - downloads are disabled in automated test environments
@@ -189,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if args.verify:
             counts = verify_all_records(records)
-            print(f"Verified {counts['total']} datasets successfully ({counts['train']} train, {counts['eval']} eval, {counts['synthetic']} synthetic).")
+            print(f"Validated {counts['total']} metadata records ({counts['train']} train, {counts['eval']} eval, {counts['synthetic']} synthetic); licenses and corpus contents remain unverified.")
             return 0
 
         if args.download:

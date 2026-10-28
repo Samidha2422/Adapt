@@ -2,7 +2,7 @@
 
 use crate::{
     cues::{detect_cues, CueMatches},
-    normalizer::{normalize, MAX_TEXT_LENGTH_BYTES},
+    normalizer::{normalize, normalize_pii_input, MAX_TEXT_LENGTH_BYTES},
     pii::{mask_pii, PiiMatch},
     TextError,
 };
@@ -56,7 +56,9 @@ impl TextBackend for HeuristicTextBackend {
         let lower = normalized.to_ascii_lowercase();
 
         // 2. PII Detection & Masking
-        let (masked_text, pii_matches) = mask_pii(&normalized);
+        // Preserve identifier repetitions while retaining Unicode canonicalization.
+        let pii_input = normalize_pii_input(raw_text);
+        let (masked_text, pii_matches) = mask_pii(&pii_input);
 
         // 3. Cue Detection
         let cues = detect_cues(&lower);

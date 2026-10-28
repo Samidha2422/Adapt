@@ -36,6 +36,8 @@ models-verify:
     @& ./scripts/just.ps1 models-verify
 models-verify-test:
     @& ./scripts/just.ps1 models-verify-test
+training-test:
+    @& ./scripts/just.ps1 training-test
 models-verify-install:
     @& ./scripts/just.ps1 models-verify-install
 train-download:

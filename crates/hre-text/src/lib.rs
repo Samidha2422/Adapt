@@ -116,10 +116,31 @@ mod tests {
         assert!(matches!(analyze(&huge), Err(TextError::TextTooLong { .. })));
     }
 
+    #[test]
+    fn pii_handles_short_inputs_and_unicode_context() {
+        for text in ["", "1", "12", "123", "1234", "12345", "é12345"] {
+            assert!(detect_pii(text).is_empty());
+        }
+        let text = format!("{} address 560001 {}", "İé".repeat(20), "界".repeat(30));
+        assert!(mask_pii(&text).0.contains("[PIN]"));
+    }
+
+    #[test]
+    fn pii_is_masked_before_repetition_normalization() {
+        let report = analyze("AAAAA1234A and aaa@example.com").unwrap();
+        assert_eq!(report.masked_text, "[PAN] and [EMAIL]");
+        assert_eq!(mask_pii("Email aaa@example.com.").0, "Email [EMAIL].");
+        assert_eq!(
+            analyze("aaa@exam\u{200b}ple.com").unwrap().masked_text,
+            "[EMAIL]"
+        );
+    }
+
     proptest! {
         #[test]
         fn property_normalizer_never_panics(s in ".*") {
             let _ = normalize(&s);
+            let _ = mask_pii(&s);
         }
     }
 }

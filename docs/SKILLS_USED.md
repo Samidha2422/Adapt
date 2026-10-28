@@ -1,5 +1,16 @@
 # Skills used
 
+B3/B4 implementation session (2026-10-28): read
+`C:/Users/Vibhav/.agents/skills/rust-best-practices/SKILL.md` and relevant
+coding/Clippy/error/testing/documentation reference chapters, plus
+`C:/Users/Vibhav/.agents/skills/ponytail/SKILL.md` and
+`C:/Users/Vibhav/.agents/skills/verification-before-completion/SKILL.md`.
+Applied borrowed byte inputs, typed errors/DTOs, bounded transient processing,
+documented public functions, deterministic unavailable results and parser/property
+tests. Read ENGINE_PROMPT and all three research files. No models, external tool
+APIs or new third-party crates were introduced. Execution/verification is reserved
+for parent Luna; this record makes no passing-test claim.
+
 Snapshot: 2026-10-28. This records this documentation sidecar's work only; it does not attest that other agents read or followed skills.
 
 | Skill | Exact source read | Applied purpose |

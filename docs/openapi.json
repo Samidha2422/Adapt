@@ -165,6 +165,181 @@
         ]
       }
     },
+    "/v1/analyze/image": {
+      "post": {
+        "tags": [],
+        "operationId": "analyze_image",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
+    "/v1/calllogs/import": {
+      "post": {
+        "tags": [
+          "calls"
+        ],
+        "description": "Validates the entire CSV before analysis. Rows then run in file order through existing behavior/fusion rules with independent atomic event persistence. Import is not all-or-nothing: row failures do not roll back successful rows or stop later rows. Drafts write nothing. Call model and ASR remain unavailable.",
+        "operationId": "import_calls",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallImportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
     "/v1/events/refusal": {
       "post": {
         "tags": [],
@@ -290,6 +465,16 @@
             "description": ""
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
             "description": "",
             "content": {
               "application/json": {
@@ -624,6 +809,91 @@
           "outgoing"
         ]
       },
+      "CallImportRequest": {
+        "type": "object",
+        "required": [
+          "platform",
+          "conversation_id",
+          "csv"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": "string"
+          },
+          "csv": {
+            "type": "string",
+            "description": "UTF-8 CSV using hre-calls' nine required columns. Maximum two MiB."
+          },
+          "draft": {
+            "type": "boolean"
+          },
+          "platform": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CallImportResponse": {
+        "type": "object",
+        "required": [
+          "atomic",
+          "rows"
+        ],
+        "properties": {
+          "atomic": {
+            "type": "boolean",
+            "description": "Always false: each row commits independently after the whole CSV validates."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CallImportRow"
+            }
+          }
+        }
+      },
+      "CallImportRow": {
+        "type": "object",
+        "required": [
+          "row",
+          "event_id",
+          "outcome"
+        ],
+        "properties": {
+          "assessment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AnalyzeResponse"
+              }
+            ]
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RowOutcome"
+          },
+          "problem": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Problem"
+              }
+            ]
+          },
+          "row": {
+            "type": "integer",
+            "description": "One-based CSV line, counting the header as line one.",
+            "minimum": 0
+          }
+        }
+      },
       "Channel": {
         "type": "object",
         "required": [
@@ -776,6 +1046,23 @@
             "type": "string"
           },
           "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageUpload": {
+        "type": "object",
+        "description": "Multipart fields: `request` is an AnalyzeRequest JSON envelope; `image` is the file.",
+        "required": [
+          "request",
+          "image"
+        ],
+        "properties": {
+          "image": {
+            "type": "string",
+            "format": "binary"
+          },
+          "request": {
             "type": "string"
           }
         }
@@ -999,6 +1286,15 @@
             ]
           }
         }
+      },
+      "RowOutcome": {
+        "type": "string",
+        "enum": [
+          "imported",
+          "cached",
+          "draft",
+          "failed"
+        ]
       },
       "SecondaryAction": {
         "type": "string",

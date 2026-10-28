@@ -1,0 +1,1935 @@
+{
+  "schema_version": 1,
+  "simulated": true,
+  "seed": 20261028,
+  "variants": 4,
+  "generator": "rust_generator_b_v1_phase_schedules",
+  "limitations": [
+    "Synthetic results only; no field accuracy, pretrained model inference or public benchmark claims.",
+    "Generator B is independent Rust code and reads no training/ files or Generator A outputs; distribution separation is not statistically certified.",
+    "Semantic labels are authored before scoring, not derived from engine scores. Ambiguous cases are deliberately benign stress cases.",
+    "Engine-only in-memory replay; no HTTP, persistence, alerts, client C8, model registry or media overrides.",
+    "Text uses explicit heuristic backend. Behavior includes rule/logistic fallback and pile-on; fusion uses actual public functions with serialized configs.",
+    "Conversation confusion uses maximum score across both directions; labels describe whole synthetic conversations, not offender attribution.",
+    "Time-to-detection is one-based contact events (including replies, excluding refusal markers) from conversation start; misses are null and excluded from percentiles.",
+    "Latency is serial un-warmed debug/release-dependent wall time for text + history append + behavior + combined fusion; excludes generation, text-only ablation, IO and API.",
+    "Small language slices are illustrative; mr-like authored text is not linguistically validated coverage.",
+    "Cyberflasher excluded from scored generator classes: absent real media inference cannot supply a prediction. No C8/deepfake/synthetic-voice evaluation."
+  ],
+  "behavior_config": {
+    "unreplied_review_count": 20,
+    "unreplied_high_count": 60,
+    "pile_on_senders": 10,
+    "pile_on_window_seconds": 60,
+    "reciprocity_protective_ratio": 0.4,
+    "reverse_harassment_guard_count": 20,
+    "recipient_utc_offset_minutes": 0,
+    "night_start_hour": 22,
+    "night_end_hour": 6,
+    "logistic_bias": -4.0,
+    "logistic_weights": {
+      "after_refusal_count": 3.0,
+      "night_ratio_24h": 0.4,
+      "reply_ratio_24h": -4.0,
+      "tox_slope_last20": 2.0,
+      "unreplied_streak": 4.0
+    }
+  },
+  "fusion_config": {
+    "thresholds": {
+      "review": 31,
+      "high": 61,
+      "urgent": 86
+    },
+    "weights": {
+      "audio": 0.0,
+      "behavior": 0.85,
+      "call": 0.8,
+      "image": 0.85,
+      "ocr": 0.8,
+      "pii": 0.4,
+      "pile_on": 0.85,
+      "text": 0.8
+    },
+    "floors": {
+      "threat": 86,
+      "contact_after_refusal": 61,
+      "repeated_after_refusal": 75,
+      "unsolicited_explicit": 61,
+      "reported_hash_match": 86,
+      "sextortion": 86,
+      "synthetic_intimate": 86,
+      "doxxing": 70,
+      "address_threat": 86,
+      "pile_on": 61
+    },
+    "caps": {
+      "healthy_reciprocity": 55,
+      "quoted_abuse_discount": 0.5,
+      "banter_discount": 0.7,
+      "tone_max_addition": 10.0
+    },
+    "calibration": []
+  },
+  "modules": {
+    "audio": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "No ASR/audio backend and paired waveform/transcript corpus connected."
+    },
+    "behavior": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_max_behavior_or_pile_on",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 68,
+        "confusion": {
+          "tp": 28,
+          "fp": 0,
+          "tn": 28,
+          "fn": 12
+        },
+        "precision": 1.0,
+        "recall": 0.7,
+        "f1": 0.8235294117647058,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.9999999992417439,
+          "precision": 1.0,
+          "recall": 0.2
+        },
+        {
+          "threshold": 0.9999946737464687,
+          "precision": 1.0,
+          "recall": 0.275
+        },
+        {
+          "threshold": 0.9999944800865497,
+          "precision": 1.0,
+          "recall": 0.3
+        },
+        {
+          "threshold": 0.9999938558253978,
+          "precision": 1.0,
+          "recall": 0.6
+        },
+        {
+          "threshold": 0.85,
+          "precision": 1.0,
+          "recall": 0.7
+        },
+        {
+          "threshold": 0.2689414213699951,
+          "precision": 1.0,
+          "recall": 0.725
+        },
+        {
+          "threshold": 0.23147521650098232,
+          "precision": 1.0,
+          "recall": 0.775
+        },
+        {
+          "threshold": 0.19781611144141825,
+          "precision": 1.0,
+          "recall": 0.825
+        },
+        {
+          "threshold": 0.1,
+          "precision": 0.8918918918918919,
+          "recall": 0.825
+        },
+        {
+          "threshold": 0.08317269649392238,
+          "precision": 0.8947368421052632,
+          "recall": 0.85
+        },
+        {
+          "threshold": 0.06913842034334682,
+          "precision": 0.9,
+          "recall": 0.9
+        },
+        {
+          "threshold": 0.032295464698450516,
+          "precision": 0.9090909090909091,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.021881270936130476,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "call": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "No standalone call classifier connected; call logs exercise actual hre-behavior rules only."
+    },
+    "fusion": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 68,
+        "confusion": {
+          "tp": 32,
+          "fp": 0,
+          "tn": 28,
+          "fn": 8
+        },
+        "precision": 1.0,
+        "recall": 0.8,
+        "f1": 0.8888888888888888,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.96,
+          "precision": 1.0,
+          "recall": 0.1
+        },
+        {
+          "threshold": 0.85,
+          "precision": 1.0,
+          "recall": 0.6
+        },
+        {
+          "threshold": 0.73,
+          "precision": 1.0,
+          "recall": 0.7
+        },
+        {
+          "threshold": 0.66,
+          "precision": 1.0,
+          "recall": 0.725
+        },
+        {
+          "threshold": 0.59,
+          "precision": 1.0,
+          "recall": 0.8
+        },
+        {
+          "threshold": 0.2,
+          "precision": 1.0,
+          "recall": 0.85
+        },
+        {
+          "threshold": 0.17,
+          "precision": 1.0,
+          "recall": 0.9
+        },
+        {
+          "threshold": 0.08,
+          "precision": 0.9,
+          "recall": 0.9
+        },
+        {
+          "threshold": 0.03,
+          "precision": 0.9090909090909091,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.02,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "image": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "No real image classifier and labeled image corpus connected; hash/override proxies cannot measure classifier accuracy."
+    },
+    "ocr": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "No pixel OCR backend and paired image/transcript evaluation corpus connected; metadata proxies do not measure OCR."
+    },
+    "text": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 18,
+        "confusion": {
+          "tp": 5,
+          "fp": 1,
+          "tn": 8,
+          "fn": 4
+        },
+        "precision": 0.8333333333333334,
+        "recall": 0.5555555555555556,
+        "f1": 0.6666666666666666,
+        "fpr": 0.1111111111111111
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.95,
+          "precision": 1.0,
+          "recall": 0.3333333333333333
+        },
+        {
+          "threshold": 0.9,
+          "precision": 1.0,
+          "recall": 0.4444444444444444
+        },
+        {
+          "threshold": 0.85,
+          "precision": 0.8,
+          "recall": 0.4444444444444444
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.8333333333333334,
+          "recall": 0.5555555555555556
+        },
+        {
+          "threshold": 0.33249999999999996,
+          "precision": 0.7142857142857143,
+          "recall": 0.5555555555555556
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    }
+  },
+  "ablations": {
+    "full": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "OCR/image/audio/call classifiers unavailable in this evaluator; text_behavior is the full available engine path."
+    },
+    "plus_calls": {
+      "status": "roadmap",
+      "backend": "disabled",
+      "simulated": true,
+      "unit": "not_evaluated",
+      "threshold": null,
+      "metrics": null,
+      "pr_curve": null,
+      "reason": "Standalone call module unavailable; existing call events already contribute to behavior."
+    },
+    "text_behavior": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 68,
+        "confusion": {
+          "tp": 32,
+          "fp": 0,
+          "tn": 28,
+          "fn": 8
+        },
+        "precision": 1.0,
+        "recall": 0.8,
+        "f1": 0.8888888888888888,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.96,
+          "precision": 1.0,
+          "recall": 0.1
+        },
+        {
+          "threshold": 0.85,
+          "precision": 1.0,
+          "recall": 0.6
+        },
+        {
+          "threshold": 0.73,
+          "precision": 1.0,
+          "recall": 0.7
+        },
+        {
+          "threshold": 0.66,
+          "precision": 1.0,
+          "recall": 0.725
+        },
+        {
+          "threshold": 0.59,
+          "precision": 1.0,
+          "recall": 0.8
+        },
+        {
+          "threshold": 0.2,
+          "precision": 1.0,
+          "recall": 0.85
+        },
+        {
+          "threshold": 0.17,
+          "precision": 1.0,
+          "recall": 0.9
+        },
+        {
+          "threshold": 0.08,
+          "precision": 0.9,
+          "recall": 0.9
+        },
+        {
+          "threshold": 0.03,
+          "precision": 0.9090909090909091,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.02,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_only": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 68,
+        "confusion": {
+          "tp": 8,
+          "fp": 0,
+          "tn": 28,
+          "fn": 32
+        },
+        "precision": 1.0,
+        "recall": 0.2,
+        "f1": 0.3333333333333333,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.86,
+          "precision": 1.0,
+          "recall": 0.1
+        },
+        {
+          "threshold": 0.56,
+          "precision": 1.0,
+          "recall": 0.2
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5882352941176471,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    }
+  },
+  "slices": {
+    "behavior_call_context": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 20,
+        "confusion": {
+          "tp": 12,
+          "fp": 0,
+          "tn": 4,
+          "fn": 4
+        },
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.85,
+          "precision": 1.0,
+          "recall": 0.75
+        },
+        {
+          "threshold": 0.08,
+          "precision": 0.75,
+          "recall": 0.75
+        },
+        {
+          "threshold": 0.03,
+          "precision": 0.8,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.8,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "heavy_benign_calls": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 4,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 4,
+          "fn": 0
+        },
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": null
+        },
+        {
+          "threshold": 0.08,
+          "precision": 0.0,
+          "recall": null
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.0,
+          "recall": null
+        }
+      ],
+      "reason": null
+    },
+    "heavy_benign_messages": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 16,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 16,
+          "fn": 0
+        },
+        "precision": null,
+        "recall": null,
+        "f1": null,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": null
+        },
+        {
+          "threshold": 0.02,
+          "precision": 0.0,
+          "recall": null
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.0,
+          "recall": null
+        }
+      ],
+      "reason": null
+    },
+    "polite_stalker_keyword": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_keyword",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 4,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 0,
+          "fn": 4
+        },
+        "precision": null,
+        "recall": 0.0,
+        "f1": 0.0,
+        "fpr": null
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "polite_stalker_system": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "conversation_any_review",
+      "threshold": 0.31,
+      "metrics": {
+        "n": 4,
+        "confusion": {
+          "tp": 4,
+          "fp": 0,
+          "tn": 0,
+          "fn": 0
+        },
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "fpr": null
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.85,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_en": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 12,
+        "confusion": {
+          "tp": 5,
+          "fp": 1,
+          "tn": 5,
+          "fn": 1
+        },
+        "precision": 0.8333333333333334,
+        "recall": 0.8333333333333334,
+        "f1": 0.8333333333333334,
+        "fpr": 0.16666666666666666
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.95,
+          "precision": 1.0,
+          "recall": 0.5
+        },
+        {
+          "threshold": 0.9,
+          "precision": 1.0,
+          "recall": 0.6666666666666666
+        },
+        {
+          "threshold": 0.85,
+          "precision": 0.8,
+          "recall": 0.6666666666666666
+        },
+        {
+          "threshold": 0.7,
+          "precision": 0.8333333333333334,
+          "recall": 0.8333333333333334
+        },
+        {
+          "threshold": 0.33249999999999996,
+          "precision": 0.7142857142857143,
+          "recall": 0.8333333333333334
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_hi": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 2,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 1,
+          "fn": 1
+        },
+        "precision": null,
+        "recall": 0.0,
+        "f1": 0.0,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_hi-Latn": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 2,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 1,
+          "fn": 1
+        },
+        "precision": null,
+        "recall": 0.0,
+        "f1": 0.0,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_keyword_baseline": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 18,
+        "confusion": {
+          "tp": 3,
+          "fp": 3,
+          "tn": 6,
+          "fn": 6
+        },
+        "precision": 0.5,
+        "recall": 0.3333333333333333,
+        "f1": 0.4,
+        "fpr": 0.3333333333333333
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 1.0,
+          "precision": 0.5,
+          "recall": 0.3333333333333333
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    },
+    "text_mr-like": {
+      "status": "built",
+      "backend": "heuristic",
+      "simulated": true,
+      "unit": "authored_text_case",
+      "threshold": 0.5,
+      "metrics": {
+        "n": 2,
+        "confusion": {
+          "tp": 0,
+          "fp": 0,
+          "tn": 1,
+          "fn": 1
+        },
+        "precision": null,
+        "recall": 0.0,
+        "f1": 0.0,
+        "fpr": 0.0
+      },
+      "pr_curve": [
+        {
+          "threshold": 1.000001,
+          "precision": null,
+          "recall": 0.0
+        },
+        {
+          "threshold": 0.0,
+          "precision": 0.5,
+          "recall": 1.0
+        }
+      ],
+      "reason": null
+    }
+  },
+  "detection": {
+    "positive_conversations": 40,
+    "detected_conversations": 32,
+    "detection_rate": 0.8,
+    "time_to_detection_events_p50": 18.0,
+    "time_to_detection_events_p95": 18.0,
+    "missed_conversations": 8
+  },
+  "latency": {
+    "n": 7358,
+    "p50_ms": 0.8935,
+    "p95_ms": 2.0216000000000003,
+    "p99_ms": 2.5271,
+    "scope": "serial_engine_replay_ms"
+  },
+  "conversations": [
+    {
+      "id": "b-normal-0",
+      "class": "normal",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 14,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-normal-1",
+      "class": "normal",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 11,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-normal-2",
+      "class": "normal",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 17,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-normal-3",
+      "class": "normal",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 12,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_couple-0",
+      "class": "heavy_benign_couple",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 210,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_couple-1",
+      "class": "heavy_benign_couple",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 170,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_couple-2",
+      "class": "heavy_benign_couple",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 246,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_couple-3",
+      "class": "heavy_benign_couple",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 206,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_friends-0",
+      "class": "heavy_benign_friends",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 238,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_friends-1",
+      "class": "heavy_benign_friends",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 198,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_friends-2",
+      "class": "heavy_benign_friends",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 274,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_friends-3",
+      "class": "heavy_benign_friends",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 234,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_fandom-0",
+      "class": "heavy_benign_fandom",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 266,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_fandom-1",
+      "class": "heavy_benign_fandom",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 226,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_fandom-2",
+      "class": "heavy_benign_fandom",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 186,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_fandom-3",
+      "class": "heavy_benign_fandom",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 262,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_family-0",
+      "class": "heavy_benign_family",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 178,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_family-1",
+      "class": "heavy_benign_family",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 254,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_family-2",
+      "class": "heavy_benign_family",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 214,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_family-3",
+      "class": "heavy_benign_family",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": false,
+      "contact_events": 174,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-polite_stalker-0",
+      "class": "polite_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 103,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-polite_stalker-1",
+      "class": "polite_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 83,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-polite_stalker-2",
+      "class": "polite_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 121,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-polite_stalker-3",
+      "class": "polite_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 101,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-escalating_stalker-0",
+      "class": "escalating_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 117,
+      "max_severity": 96,
+      "first_review_event": 18,
+      "behavior_max": 0.9999946737464687,
+      "text_only_max_severity": 86,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-escalating_stalker-1",
+      "class": "escalating_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 97,
+      "max_severity": 96,
+      "first_review_event": 18,
+      "behavior_max": 0.9999944800865497,
+      "text_only_max_severity": 86,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-escalating_stalker-2",
+      "class": "escalating_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 135,
+      "max_severity": 96,
+      "first_review_event": 18,
+      "behavior_max": 0.9999946737464687,
+      "text_only_max_severity": 86,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-escalating_stalker-3",
+      "class": "escalating_stalker",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 115,
+      "max_severity": 96,
+      "first_review_event": 18,
+      "behavior_max": 0.9999946737464687,
+      "text_only_max_severity": 86,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-post_block_contacter-0",
+      "class": "post_block_contacter",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 131,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_contacter-1",
+      "class": "post_block_contacter",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 111,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_contacter-2",
+      "class": "post_block_contacter",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 91,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_contacter-3",
+      "class": "post_block_contacter",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 129,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-pile_on-0",
+      "class": "pile_on",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 13,
+      "max_severity": 73,
+      "first_review_event": 10,
+      "behavior_max": 0.85,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-pile_on-1",
+      "class": "pile_on",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 12,
+      "max_severity": 73,
+      "first_review_event": 10,
+      "behavior_max": 0.85,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-pile_on-2",
+      "class": "pile_on",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 12,
+      "max_severity": 73,
+      "first_review_event": 10,
+      "behavior_max": 0.85,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-pile_on-3",
+      "class": "pile_on",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 12,
+      "max_severity": 73,
+      "first_review_event": 10,
+      "behavior_max": 0.85,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-bully-0",
+      "class": "bully",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 7,
+      "max_severity": 59,
+      "first_review_event": 1,
+      "behavior_max": 0.06913842034334682,
+      "text_only_max_severity": 56,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-bully-1",
+      "class": "bully",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 8,
+      "max_severity": 59,
+      "first_review_event": 1,
+      "behavior_max": 0.08317269649392238,
+      "text_only_max_severity": 56,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-bully-2",
+      "class": "bully",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 7,
+      "max_severity": 59,
+      "first_review_event": 1,
+      "behavior_max": 0.06913842034334682,
+      "text_only_max_severity": 56,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-bully-3",
+      "class": "bully",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 15,
+      "max_severity": 66,
+      "first_review_event": 1,
+      "behavior_max": 0.2689414213699951,
+      "text_only_max_severity": 56,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-sextortion-0",
+      "class": "sextortion",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 14,
+      "max_severity": 20,
+      "first_review_event": null,
+      "behavior_max": 0.23147521650098232,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-sextortion-1",
+      "class": "sextortion",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 13,
+      "max_severity": 17,
+      "first_review_event": null,
+      "behavior_max": 0.19781611144141825,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-sextortion-2",
+      "class": "sextortion",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 14,
+      "max_severity": 20,
+      "first_review_event": null,
+      "behavior_max": 0.23147521650098232,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-sextortion-3",
+      "class": "sextortion",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 13,
+      "max_severity": 17,
+      "first_review_event": null,
+      "behavior_max": 0.19781611144141825,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-silent_caller-0",
+      "class": "silent_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 129,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-silent_caller-1",
+      "class": "silent_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 109,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-silent_caller-2",
+      "class": "silent_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 89,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-silent_caller-3",
+      "class": "silent_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 127,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-night_caller-0",
+      "class": "night_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 85,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-night_caller-1",
+      "class": "night_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 123,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-night_caller-2",
+      "class": "night_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 103,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-night_caller-3",
+      "class": "night_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 83,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999938558253978,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_caller-0",
+      "class": "post_block_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 99,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_caller-1",
+      "class": "post_block_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 137,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_caller-2",
+      "class": "post_block_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 117,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-post_block_caller-3",
+      "class": "post_block_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 97,
+      "max_severity": 85,
+      "first_review_event": 18,
+      "behavior_max": 0.9999999992417439,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-new_number_caller-0",
+      "class": "new_number_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 113,
+      "max_severity": 3,
+      "first_review_event": null,
+      "behavior_max": 0.032295464698450516,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-new_number_caller-1",
+      "class": "new_number_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 93,
+      "max_severity": 3,
+      "first_review_event": null,
+      "behavior_max": 0.032295464698450516,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-new_number_caller-2",
+      "class": "new_number_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 131,
+      "max_severity": 3,
+      "first_review_event": null,
+      "behavior_max": 0.032295464698450516,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-new_number_caller-3",
+      "class": "new_number_caller",
+      "positive": true,
+      "heavy_benign": false,
+      "calls": true,
+      "contact_events": 111,
+      "max_severity": 3,
+      "first_review_event": null,
+      "behavior_max": 0.032295464698450516,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_calls-0",
+      "class": "heavy_benign_calls",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": true,
+      "contact_events": 127,
+      "max_severity": 8,
+      "first_review_event": null,
+      "behavior_max": 0.1,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_calls-1",
+      "class": "heavy_benign_calls",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": true,
+      "contact_events": 107,
+      "max_severity": 8,
+      "first_review_event": null,
+      "behavior_max": 0.1,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_calls-2",
+      "class": "heavy_benign_calls",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": true,
+      "contact_events": 87,
+      "max_severity": 8,
+      "first_review_event": null,
+      "behavior_max": 0.1,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-heavy_benign_calls-3",
+      "class": "heavy_benign_calls",
+      "positive": false,
+      "heavy_benign": true,
+      "calls": true,
+      "contact_events": 125,
+      "max_severity": 8,
+      "first_review_event": null,
+      "behavior_max": 0.1,
+      "text_only_max_severity": 0,
+      "keyword_flagged": false
+    },
+    {
+      "id": "b-noisy_ambiguous-0",
+      "class": "noisy_ambiguous",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 18,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-noisy_ambiguous-1",
+      "class": "noisy_ambiguous",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 28,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-noisy_ambiguous-2",
+      "class": "noisy_ambiguous",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 30,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    },
+    {
+      "id": "b-noisy_ambiguous-3",
+      "class": "noisy_ambiguous",
+      "positive": false,
+      "heavy_benign": false,
+      "calls": false,
+      "contact_events": 26,
+      "max_severity": 2,
+      "first_review_event": null,
+      "behavior_max": 0.021881270936130476,
+      "text_only_max_severity": 0,
+      "keyword_flagged": true
+    }
+  ],
+  "text_cases": [
+    {
+      "id": "courtesy",
+      "language": "en",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "threat",
+      "language": "en",
+      "positive": true,
+      "score": 0.95,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "quote_report",
+      "language": "en",
+      "positive": false,
+      "score": 0.33249999999999996,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "negated_threat",
+      "language": "en",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "substring",
+      "language": "en",
+      "positive": false,
+      "score": 0.85,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "idiom",
+      "language": "en",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "targeted_insult",
+      "language": "en",
+      "positive": true,
+      "score": 0.7,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "coded_exclusion",
+      "language": "en",
+      "positive": true,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "coercion",
+      "language": "en",
+      "positive": true,
+      "score": 0.9,
+      "keyword_score": 1.0
+    },
+    {
+      "id": "privacy_consent",
+      "language": "en",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "zero_width",
+      "language": "en",
+      "positive": true,
+      "score": 0.95,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "homoglyph",
+      "language": "en",
+      "positive": true,
+      "score": 0.95,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "hinglish_refusal",
+      "language": "hi-Latn",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "hinglish_threat",
+      "language": "hi-Latn",
+      "positive": true,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "hindi_threat",
+      "language": "hi",
+      "positive": true,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "hindi_benign",
+      "language": "hi",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "marathi_like_benign",
+      "language": "mr-like",
+      "positive": false,
+      "score": 0.0,
+      "keyword_score": 0.0
+    },
+    {
+      "id": "marathi_like_threat",
+      "language": "mr-like",
+      "positive": true,
+      "score": 0.0,
+      "keyword_score": 0.0
+    }
+  ],
+  "ocr_cer": null,
+  "ocr_wer": null,
+  "asr_wer": null,
+  "cohens_kappa": null,
+  "slang_temporal_split": null,
+  "unavailable_reasons": {
+    "asr_wer": "No ASR predictions or TTS waveform/reference pairs.",
+    "cohens_kappa": "No independent annotator label files supplied; use hre-eval kappa LABEL_A.json LABEL_B.json.",
+    "ocr_cer/ocr_wer": "No pixel OCR predictions with independent reference transcripts.",
+    "slang_temporal_split": "No slang feedback/adaptation engine connected; no before/after scores invented."
+  }
+}

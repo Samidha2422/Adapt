@@ -1,9 +1,10 @@
 //! HTTP boundary: authentication, validation, draft isolation and generated OpenAPI.
+mod calls;
 mod engine;
 pub mod mock;
 
 use axum::{
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Request, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Multipart, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{
@@ -63,7 +64,16 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/v1/health", get(health))
         .route("/v1/health/models", get(health_models))
         .route("/v1/analyze", post(analyze))
+        .route(
+            "/v1/analyze/image",
+            post(analyze_image).layer(DefaultBodyLimit::max(hre_vision::MAX_IMAGE_SIZE + 65536)),
+        )
         .route("/v1/events/refusal", post(refusal))
+        .route(
+            "/v1/calllogs/import",
+            post(calls::import_calls)
+                .layer(DefaultBodyLimit::max(hre_calls::MAX_CSV_BYTES * 2 + 65536)),
+        )
         .route("/v1/reports", post(report))
         .route("/v1/stream/alerts", get(stream_alerts))
         .route("/v1/alerts", get(alert_list))
@@ -220,6 +230,94 @@ fn json_error(error: JsonRejection) -> ApiError {
         "invalid JSON envelope or request exceeds body limit",
     )
 }
+
+/// Multipart fields: `request` is an AnalyzeRequest JSON envelope; `image` is the file.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct ImageUpload {
+    request: String,
+    #[schema(value_type = String, format = Binary)]
+    image: Vec<u8>,
+}
+
+#[utoipa::path(post, path = "/v1/analyze/image",
+    request_body(content = ImageUpload, content_type = "multipart/form-data"),
+    responses((status = 200, body = AnalyzeResponse), (status = 400, body = Problem),
+        (status = 401, body = Problem), (status = 409, body = Problem),
+        (status = 413, body = Problem), (status = 422, body = Problem)),
+    security(("api_key" = []), ("moderator" = [])))]
+async fn analyze_image(
+    State(state): State<Shared>,
+    multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
+) -> Result<Json<AnalyzeResponse>, ApiError> {
+    let mut multipart = multipart
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid multipart envelope"))?;
+    let mut envelope = None;
+    let mut image = None;
+    let mut file_mime = None;
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
+        match field.name() {
+            Some("request") if envelope.is_none() => {
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.len() > 65536 {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "image envelope exceeds limit",
+                    ));
+                }
+                envelope = Some(serde_json::from_slice::<AnalyzeRequest>(&bytes).map_err(
+                    |_| ApiError::new(StatusCode::BAD_REQUEST, "invalid image request JSON"),
+                )?);
+            }
+            Some("image") if image.is_none() => {
+                file_mime = field.content_type().map(str::to_owned);
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.is_empty() || bytes.len() > hre_vision::MAX_IMAGE_SIZE {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "image must contain 1..10485760 bytes",
+                    ));
+                }
+                image = Some(bytes.to_vec());
+            }
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "expected one request and one image field",
+                ))
+            }
+        }
+    }
+    let request =
+        envelope.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "request field required"))?;
+    request.validate()?;
+    if request.kind != EventKind::Image
+        || request.media.as_ref().map(|m| m.mime.as_str()) != file_mime.as_deref()
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "image kind and matching file MIME required",
+        ));
+    }
+    let bytes =
+        image.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "image field required"))?;
+    let (response, fresh) = if state.mock {
+        (mock::analyze(&request), false)
+    } else {
+        state.engine.analyze_image(&request, Some(bytes)).await?
+    };
+    if fresh && response.alert_id.is_some() {
+        let _ = state.alerts.send(response.clone());
+    }
+    Ok(Json(response))
+}
+
+fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
+    ApiError::new(
+        error.status(),
+        "invalid multipart upload or request exceeds body limit",
+    )
+}
 #[utoipa::path(get, path = "/v1/health/models", responses((status = 200, body = Vec<ModelHealth>), (status = 401, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
 async fn health_models(State(state): State<Shared>) -> Json<Vec<ModelHealth>> {
     Json(state.engine.model_health())
@@ -233,7 +331,7 @@ async fn refusal(
     state.engine.refusal(&request).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-#[utoipa::path(post, path = "/v1/reports", request_body = ReportRequest, responses((status = 204), (status = 401, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
+#[utoipa::path(post, path = "/v1/reports", request_body = ReportRequest, responses((status = 204), (status = 401, body = Problem), (status = 404, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
 async fn report(
     State(state): State<Shared>,
     input: Result<Json<ReportRequest>, JsonRejection>,
@@ -325,7 +423,7 @@ impl Modify for Security {
     }
 }
 #[derive(OpenApi)]
-#[openapi(info(title = "Harassment Risk Engine", version = "0.1.0"), paths(health, health_models, analyze, refusal, report, stream_alerts, alert_list, feed_protection, reset),
+#[openapi(info(title = "Harassment Risk Engine", version = "0.1.0"), paths(health, health_models, analyze, analyze_image, calls::import_calls, refusal, report, stream_alerts, alert_list, feed_protection, reset),
     components(schemas(AnalyzeRequest, AnalyzeResponse, Problem, HealthResponse, RefusalRequest, ReportRequest, ReviewRequest, FeedProtection)), modifiers(&Security))]
 struct Contract;
 /// Source of truth for both the served contract and committed JSON export.
