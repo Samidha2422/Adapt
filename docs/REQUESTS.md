@@ -68,3 +68,26 @@ No request permits editing a different owner's crate. Continue lead walking-skel
   - 47-feature vector extraction exactly matches `docs/FEATURES.md` and `hre-behavior::extract_features` within 1e-4 tolerance.
   - Golden vector fixture exported to `training/fixtures/golden_vector.json` and 14 scenario samples exported to `training/fixtures/synthetic_samples.json`.
   - All 7 tests passing in 0.014s (`test_same_seed_same_events`, `test_seed_changes_sample`, `test_chronology_and_matching_payloads`, `test_healthy_reciprocity_and_refusal_sequence`, `test_no_real_identifiers`, `test_golden_vector_order_and_values`, `test_generator_a_training_only`).
+
+| REQ22 | Lead | Review dataset provenance inventory and license admission rules in `training/datasets.json` | Provenance tracking, opt-in download gate, and train/eval split independence | Implemented on main; 6 unit tests passing |
+
+### REQ22 A1 Dataset provenance inventory handoff (verified)
+
+- Implemented `training/datasets.json`, `training/src/hre_training/inventory.py`, and `training/tests/test_inventory.py`:
+  - Cataloged candidates: Jigsaw (CC0-1.0), HateXplain (MIT), Davidson (MIT), TextDetox (Apache-2.0), RAVDESS (CC-BY-NC-4.0 restricted), CREMA-D (ODbL-1.0), Synthetic Generator A (train split), and Hand-Authored Regional Benchmark (eval_held_out split).
+  - Enforced offline-first operation with patch-isolated network access tests.
+  - Enforced strict opt-in download gates restricted to `data/raw/` to protect against unauthorized media downloads.
+  - Verified training and evaluation split partitions are strictly disjoint.
+  - 6 passing unit tests in 0.007s.
+
+| REQ23 | Lead | Review ONNX model export contracts, label ordering, and parity verification in `training/src/hre_training/export_onnx.py` | Model registry integration contracts, dynamic batch axes, and parity bounds | Implemented on main; 7 unit tests passing |
+
+### REQ23 A2 ONNX export contracts and parity handoff (verified)
+
+- Implemented `training/src/hre_training/export_onnx.py` and `training/tests/test_export_onnx.py`:
+  - Defined verified tensor contracts for multi-label toxicity (7 Detoxify labels in canonical order), multilingual toxicity (toxic binary), large binary toxicity (neutral/toxic), sentiment (negative/neutral/positive), and sentence embeddings (dim 384).
+  - Enforced dynamic batch axes (`[batch_size, sequence_length]`) on inputs and dynamic `batch_size` on logits.
+  - Built license gate: unverified or unknown licenses (e.g. Cardiff sentiment) strictly block export.
+  - Built explicit missing-artifact fallback: missing local model weights produce honest degradation skips without fabricating artificial ONNX inference.
+  - Enforced 1e-4 absolute numerical parity bound.
+  - Verified zero binary model weights (`*.onnx`, `*.bin`, `*.safetensors`, `*.pt`) committed to git.

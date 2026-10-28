@@ -1,9 +1,14 @@
 [project]
 name = "hre-training"
 version = "0.1.0"
-description = "Synthetic data generator and behavior training utilities for Harassment Risk Engine"
+description = "Synthetic data generator, dataset provenance inventory, and ONNX export contracts for Harassment Risk Engine"
 requires-python = ">=3.10"
 dependencies = []
+
+[project.scripts]
+hre-inventory = "hre_training.inventory:main"
+hre-export = "hre_training.export_onnx:main"
+hre-generator-a = "hre_training.generator_a:main"
 
 [project.optional-dependencies]
 dev = []

@@ -1,49 +1,97 @@
-# Harassment Risk Engine – Training & Synthetic Generator A
+# Harassment Risk Engine — Training, Datasets & Model Exports
 
-## Role and Scope
-
-Generator A creates reproducible synthetic message and call event histories for training machine learning models (such as XGBoost behavioral classifiers) and providing baseline calibration.
+This directory hosts the Python training project, dataset provenance inventory, ONNX export specifications, and Synthetic Generator A for the Harassment Risk Engine.
 
 > [!IMPORTANT]
-> **Training Only**: Generator A fixtures are strictly reserved for model training. Independent evaluation is performed by Generator B (in Rust / `hre-eval`) using structurally distinct parameter ranges and distributions to avoid data leakage and circular evaluation.
+> **Zero Weights in Git**: Binary model weights (`*.onnx`, `*.bin`, `*.safetensors`, `*.pt`) are strictly gitignored and must never be committed to the repository.
+> **Split Independence**: Generator A fixtures are strictly reserved for training. Independent evaluation is performed by Generator B (in Rust / `hre-eval`) using structurally distinct distributions and parameter ranges to prevent circular leakage.
 
-## Feature Extraction & Golden Vector Parity
+---
 
-Feature extraction in `hre_training.features` reproduces the exact 47-feature vector contract defined in `docs/FEATURES.md` and implemented in `hre-behavior`:
+## 1. Dataset Provenance Inventory (Card A1)
 
-- **Window-level features** (11 features × 3 windows: 1h, 24h, 7d = 33 features):
+Dataset records are maintained in [`datasets.json`](datasets.json) and managed via [`inventory.py`](src/hre_training/inventory.py).
+
+### Candidate Datasets
+| Dataset ID | Candidate / Origin | License State | Split | Description |
+|---|---|---|---|---|
+| `jigsaw_toxic_comment` | Jigsaw / Civil Comments | `CC0-1.0` (Verified) | `train` | Multi-label toxicity benchmark (threat, insult, identity attack, etc.) |
+| `hatexplain` | HateXplain Benchmark | `MIT` (Verified) | `train` | Hate speech and offensive language with target group annotations |
+| `davidson_hate_speech` | Davidson et al. | `MIT` (Verified) | `train` | Distinguishes offensive language from targeted hate speech |
+| `textdetox_paradetox` | TextDetox / ParaDetox | `Apache-2.0` (Verified) | `train` | Parallel toxic/neutral sentence pairs across English and Hindi |
+| `ravdess_audio_emotion` | RAVDESS Audio/Visual | `CC-BY-NC-4.0` (Restricted) | `train` | Acted emotional speech (calm, happy, angry, sad); research only |
+| `crema_d_speech` | CREMA-D Actors Dataset | `ODbL-1.0` (Verified) | `train` | Multi-actor voice recordings annotated for emotional intent |
+| `synthetic_generator_a` | Internal Generator A | `Proprietary Internal` | `train` | Deterministic synthetic message/call behavior histories |
+| `held_out_regional_eval` | Hand-Authored Regional | `Proprietary Internal` | `eval_held_out` | Fresh hand-written English, Hindi, Hinglish, Marathi, and Konkani |
+
+### Safe Download & Offline Rules
+- **Offline First**: All inventory listing, validation, and metadata queries operate completely offline with no network dependencies.
+- **Opt-In Required**: Downloads are strictly opt-in via `--opt-in` and restricted to `data/raw/`. Arbitrary download locations are rejected.
+- **Non-Commercial Gate**: Restricted licenses (e.g. `CC-BY-NC-4.0`) require explicit authorization and cannot be deployed commercially.
+
+---
+
+## 2. ONNX Model Export & Parity (Card A2)
+
+Export specifications, label orders, and parity contracts are managed via [`export_onnx.py`](src/hre_training/export_onnx.py).
+
+### Candidate Models & Export Contracts
+| Model ID | Task | License | Cleared | Dynamic Shapes | Labels |
+|---|---|---|---|---|---|
+| `unitary/unbiased-toxic-roberta` | Toxicity Multi-label | `Apache-2.0` | **Yes** | `[batch_size, seq_len]` | 7 labels (toxicity, severe_toxicity, obscene, identity_attack, insult, threat, sexual_explicit) |
+| `unitary/multilingual-toxic-xlm-roberta` | Multilingual Toxicity | `Apache-2.0` | **Yes** | `[batch_size, seq_len]` | `["toxic"]` (Single output) |
+| `textdetox/xlmr-large-toxicity-classifier-v2` | Binary Toxicity (Large) | `openrail++` | **Yes** | `[batch_size, seq_len]` | `["neutral", "toxic"]` |
+| `cardiffnlp/twitter-xlm-roberta-base-sentiment` | Sentiment | `unknown` | **Blocked** | `[batch_size, seq_len]` | `["negative", "neutral", "positive"]` |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Sentence Embeddings | `Apache-2.0` | **Yes** | `[batch_size, seq_len]` | Dim 384 embedding |
+
+### License Clearance Gate & Tolerances
+- **License Gate**: Any candidate model with an `unknown` or unreviewed license (e.g. Cardiff sentiment) is blocked from export until official terms are vetted.
+- **Parity Tolerance**: Exported ONNX logits must match upstream PyTorch reference outputs within `1e-4` absolute tolerance.
+- **Honest Fallback**: When model weights are absent locally, the engine explicitly falls back to deterministic heuristic classification (`Backend::Heuristic`, `degraded: ["text.onnx_missing"]`) rather than claiming artificial model inference.
+
+---
+
+## 3. Synthetic Generator A (Card A4)
+
+Generator A deterministically synthesizes conversation histories for training behavioral classifiers (such as XGBoost) without touching private user logs.
+
+### Feature Extraction (47 Features)
+Implements exact parity with `docs/FEATURES.md` and `hre-behavior::extract_features`:
+- **Windowed Features** (11 features × 3 windows: 1h, 24h, 7d = 33 features):
   `msg_count`, `reply_ratio`, `night_ratio`, `tox_mean`, `tox_max`, `threat_max`, `sexual_max`, `sent_mean`, `pii_mentions`, `location_cue_count`, `unsolicited_media_count`.
-- **Global features** (14 features):
+- **Global Features** (14 features):
   `unreplied_streak`, `initiator_ratio`, `median_gap_s`, `burst_max_10m`, `after_refusal_count`, `since_refusal_hours`, `active_days_streak`, `tox_slope_last20`, `sent_slope_last20`, `repetition_score`, `sender_account_age_days`, `is_contact`, `distinct_channels`, `evasion_similarity`.
 
-The canonical golden vector fixture is exported to `training/fixtures/golden_vector.json` and verified in `test_generator_a.py`.
+The canonical golden vector is stored in `fixtures/golden_vector.json`.
 
-## Scenario Classes
+---
 
-Generator A models 14 scenario classes:
-1. `normal`: low volume, balanced replies, friendly tone
-2. `heavy_benign`: couple/friends, high volume (>40 messages, answered calls), reply ratio > 0.4, remains Low tier
-3. `polite_stalker`: relentless unreplied messages, continues after block
-4. `escalating_stalker`: transitions from polite to guilt-tripping to threats
-5. `post_block_contacter`: contacts immediately following a block refusal
-6. `pile_on`: 10+ distinct senders targeting one recipient in under a minute
-7. `bully`: repeated insults and obscene comments
-8. `cyberflasher`: unsolicited explicit media from a stranger
-9. `sextortion`: coercion + leak/payment demand cues
-10. `silent_caller`: answered calls with duration < 5s (hang-ups)
-11. `night_caller`: repeated calls during recipient night window (22:00–06:00)
-12. `post_block_caller`: call attempts after a block
-13. `new_number_caller`: calls from new accounts (<2 days old)
-14. `noisy_ambiguous`: borderline toxicity and quoted phrases
+## 4. Commands & Verification
 
-## Commands
-
-Run unit and parity tests:
+### Run All Unit & Parity Tests
 ```bash
 python -c "import sys; sys.path.insert(0, 'training/src'); import unittest; unittest.main(module=None, argv=['', 'discover', '-s', 'training/tests', '-p', 'test_*.py'])"
 ```
 
-Generate synthetic fixtures:
+### Dataset Provenance Inventory CLI
+```bash
+# Verify inventory schema and split boundaries
+python training/inventory.py --verify
+
+# Print formatted inventory table
+python training/inventory.py
+```
+
+### ONNX Model Export Specifications CLI
+```bash
+# Display model candidates and contract status
+python training/export_onnx.py
+
+# Verify license clearance
+python training/export_onnx.py --verify-license unitary/unbiased-toxic-roberta
+```
+
+### Generate Synthetic Behavior Data
 ```bash
 python training/generator_a.py --seed 42 --output training/fixtures/synthetic_samples.json
 ```
