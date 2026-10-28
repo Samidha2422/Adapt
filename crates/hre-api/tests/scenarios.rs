@@ -4,7 +4,7 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
-use hre_core::{AnalyzeResponse, EngineConfig, Pseudonymizer, SecondaryAction, Tier};
+use hre_core::{Action, AnalyzeResponse, EngineConfig, Pseudonymizer, SecondaryAction, Tier};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -378,4 +378,61 @@ async fn persistence_uses_pseudonyms_and_never_stores_drafts_or_message_text() {
     drop(store);
     drop(app);
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn scenario_3_cyberflashing_proxy_is_high_and_blurred() {
+    let app = app().await;
+    let input = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "image",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800, 0).unwrap(),
+        "sender_id": "stranger",
+        "recipient_id": "target",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-3"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "image/png",
+            "caption": "cyberflashing"
+        }
+    });
+    let response = analyze(&app, input).await;
+    assert_eq!(response.tier, Tier::High);
+    assert_eq!(response.recommended_action, Action::BlurMedia);
+    assert!(response.simulated);
+    assert!(
+        response
+            .reasons
+            .iter()
+            .any(|r| r.code.contains("UNSOLICITED_EXPLICIT_MEDIA")
+                || r.code.contains("REPORTED_HASH"))
+    );
+}
+
+#[tokio::test]
+async fn scenario_4_screenshot_meme_ocr_extracts_and_blurs() {
+    let app = app().await;
+    let input = json!({
+        "event_id": uuid::Uuid::new_v4(),
+        "kind": "image",
+        "occurred_at": chrono::DateTime::from_timestamp(1793188800, 0).unwrap(),
+        "sender_id": "meme-bully",
+        "recipient_id": "target",
+        "platform": "demo-chat",
+        "channel": {"type": "dm", "conversation_id": "scenario-4"},
+        "context": {"is_contact": false},
+        "media": {
+            "mime": "image/png",
+            "caption": "I will kill you and your family"
+        }
+    });
+    let response = analyze(&app, input).await;
+    assert!(response.tier == Tier::High || response.tier == Tier::Urgent);
+    assert_eq!(response.recommended_action, Action::BlurMedia);
+    assert!(response
+        .reasons
+        .iter()
+        .any(|r| r.code == "OCR_ABUSE" || r.code.contains("THREAT")));
+    assert!(response.signals.ocr.score >= 0.5);
 }

@@ -2,6 +2,7 @@ use crate::{mock, ApiError};
 use axum::http::StatusCode;
 use hre_core::*;
 use hre_store::{EventKind as StoredKind, Store, StoredEvent};
+use hre_vision::ImageBackend;
 use std::{collections::BTreeMap, time::Instant};
 use tokio::sync::Mutex;
 
@@ -13,6 +14,8 @@ pub(crate) struct Engine {
     behavior: hre_behavior::BehaviorConfig,
     fusion: hre_fusion::FusionConfig,
     registry: hre_ml::ModelRegistry,
+    image: hre_vision::HeuristicImageBackend,
+    ocr: hre_vision::HeuristicOcrBackend,
 }
 impl Engine {
     pub async fn new(config: &EngineConfig, mock: bool) -> anyhow::Result<Self> {
@@ -47,6 +50,13 @@ impl Engine {
         } else if config.night_timezone != "UTC" {
             anyhow::bail!("night_timezone currently supports Asia/Kolkata or UTC");
         }
+        let image = tokio::task::spawn_blocking(|| {
+            hre_vision::HeuristicImageBackend::from_config_file(std::path::Path::new(
+                "config/demo_overrides.toml",
+            ))
+        })
+        .await?;
+        let ocr = hre_vision::HeuristicOcrBackend::new();
         Ok(Self {
             store: if mock {
                 None
@@ -58,6 +68,8 @@ impl Engine {
             behavior,
             fusion,
             registry,
+            image,
+            ocr,
         })
     }
     pub async fn analyze(
@@ -80,10 +92,10 @@ impl Engine {
                 return cached_response(&cached, &request_hash).map(|response| (response, false));
             }
         }
-        if matches!(request.kind, EventKind::Image | EventKind::Audio) {
+        if matches!(request.kind, EventKind::Audio) {
             return Err(ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
-                "media analysis requires the modality pipeline; use --mock for client fixtures",
+                "audio analysis requires the audio pipeline; use --mock for client fixtures",
             ));
         }
         let sender = self.ids.subject(&request.platform, &request.sender_id)?;
@@ -124,10 +136,11 @@ impl Engine {
             sender: sender.0.clone(),
             recipient: recipient.0.clone(),
             timestamp_ms: now,
-            kind: if request.kind == EventKind::CallEvent {
-                StoredKind::Call
-            } else {
-                StoredKind::Message
+            kind: match request.kind {
+                EventKind::CallEvent => StoredKind::Call,
+                EventKind::Image => StoredKind::Image,
+                EventKind::Audio => StoredKind::Audio,
+                EventKind::Message => StoredKind::Message,
             },
             channel: self
                 .ids
@@ -147,18 +160,82 @@ impl Engine {
                 .map_or(0.0, |c| f64::from(c.duration_s)),
             ..StoredEvent::default()
         };
-        // shortcut: only a small explicit-threat fallback exists until hre-text is integrated.
-        let text = request
-            .message
-            .as_ref()
-            .map_or(String::new(), |m| m.text.to_lowercase());
-        if ["i will kill you", "i will hurt you"]
-            .iter()
-            .any(|cue| text.contains(cue))
-        {
-            event.threat = 0.95;
-            event.toxicity = 0.95;
+        // Full text normalization, multi-label analysis, PII masking and cue detection via hre-text
+        let text_report = if let Some(msg) = request.message.as_ref() {
+            match hre_text::analyze(&msg.text) {
+                Ok(rep) => {
+                    event.toxicity = rep.toxicity;
+                    event.threat = rep.threat;
+                    event.sexual = rep.sexual_explicit;
+                    event.pii_mentions = rep.pii_matches.len() as u32;
+                    event.location_cues = rep.location_cues as u32;
+                    Some(rep)
+                }
+                Err(hre_text::TextError::EmptyText) => None,
+                Err(e) => {
+                    return Err(ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()));
+                }
+            }
+        } else {
+            None
+        };
+
+        // Vision screening, OCR extraction, and reported-hash matching
+        let mut image_analysis: Option<hre_vision::ImageAnalysis> = None;
+        let mut ocr_report: Option<hre_vision::OcrReport> = None;
+        let mut reported_hash_match = false;
+        let mut unsolicited_explicit = false;
+
+        if request.kind == EventKind::Image {
+            if let Some(media) = &request.media {
+                let caption = media.caption.as_deref().unwrap_or("").trim();
+                let is_proxy = caption.contains("cyberflasher")
+                    || caption.contains("cyberflashing")
+                    || caption.starts_with("proxy:")
+                    || caption.starts_with("hash:");
+
+                let img_bytes = if is_proxy {
+                    let proxy_hash =
+                        if caption.starts_with("hash:") || caption.starts_with("sha256:") {
+                            caption.split(':').nth(1).unwrap_or("").trim()
+                        } else {
+                            "cf10000000000000000000000000000000000000000000000000000000000001"
+                        };
+                    hre_vision::png_with_text("ProxyHash", proxy_hash)
+                } else if !caption.is_empty() {
+                    hre_vision::png_with_text("Description", caption)
+                } else {
+                    hre_vision::minimal_png(10, 10)
+                };
+
+                // Image screening
+                if let Ok(mut analysis) = self.image.analyze(&img_bytes, &media.mime) {
+                    if is_proxy {
+                        analysis.signal.status = Status::Simulated;
+                        analysis.signal.score = 0.95;
+                        analysis.simulated = true;
+                        analysis.recommended_action = Some(Action::BlurMedia);
+                    }
+                    if let Ok(Some(_)) = store.find_reported_hash(analysis.p_hash, 5).await {
+                        reported_hash_match = true;
+                    }
+                    if (analysis.signal.score >= 0.5 || is_proxy) && !request.context.is_contact {
+                        unsolicited_explicit = true;
+                    }
+                    image_analysis = Some(analysis);
+                }
+
+                // OCR screening
+                if let Ok(ocr) = self.ocr.process_image(&img_bytes, &media.mime) {
+                    if ocr.signal.score >= 0.5 {
+                        event.threat = event.threat.max(ocr.signal.score);
+                        event.toxicity = event.toxicity.max(ocr.signal.score);
+                    }
+                    ocr_report = Some(ocr);
+                }
+            }
         }
+
         events.retain(|e| e.event_id != event.event_id);
         events.push(event.clone());
         let behavior_config = self.behavior.clone();
@@ -171,6 +248,11 @@ impl Engine {
                 event_id,
                 &events,
                 &pending,
+                text_report.as_ref(),
+                image_analysis.as_ref(),
+                ocr_report.as_ref(),
+                reported_hash_match,
+                unsolicited_explicit,
                 &behavior_config,
                 &fusion_config,
                 &registry,
@@ -209,10 +291,16 @@ impl Engine {
         }
         Ok((response, false))
     }
+    #[allow(clippy::too_many_arguments)]
     fn assess(
         event_id: uuid::Uuid,
         events: &[StoredEvent],
         event: &StoredEvent,
+        text_report: Option<&hre_text::TextReport>,
+        image_analysis: Option<&hre_vision::ImageAnalysis>,
+        ocr_report: Option<&hre_vision::OcrReport>,
+        reported_hash_match: bool,
+        unsolicited_explicit: bool,
         behavior_config: &hre_behavior::BehaviorConfig,
         fusion_config: &hre_fusion::FusionConfig,
         registry: &hre_ml::ModelRegistry,
@@ -224,50 +312,130 @@ impl Engine {
             event.timestamp_ms,
             behavior_config,
         );
-        let mut signals = Signals {
+        let (text_signal, pii_signal, text_reasons, text_degraded) = if let Some(rep) = text_report
+        {
+            (
+                rep.primary_signal.clone(),
+                rep.pii_signal.clone(),
+                rep.reasons.clone(),
+                rep.degraded.clone(),
+            )
+        } else {
+            (
+                Signal {
+                    score: event.toxicity,
+                    label: "text_none".into(),
+                    status: Status::Built,
+                    backend: Backend::Heuristic,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                },
+                Signal::default(),
+                Vec::new(),
+                vec!["text.onnx_missing".into(), "text.heuristic_fallback".into()],
+            )
+        };
+
+        let (image_signal, image_degraded) = if let Some(img) = image_analysis {
+            (img.signal.clone(), img.degraded.clone())
+        } else {
+            (
+                Signal {
+                    score: 0.0,
+                    label: "image_none".into(),
+                    status: Status::Built,
+                    backend: Backend::Disabled,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                },
+                vec!["image.unavailable".into()],
+            )
+        };
+
+        let (ocr_signal, ocr_degraded) = if let Some(ocr) = ocr_report {
+            (ocr.signal.clone(), ocr.degraded.clone())
+        } else {
+            (
+                Signal {
+                    score: 0.0,
+                    label: "ocr_none".into(),
+                    status: Status::Built,
+                    backend: Backend::Disabled,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                },
+                vec!["ocr.unavailable".into()],
+            )
+        };
+
+        let signals = Signals {
             behavior: behavior.behavior,
             pile_on: behavior.pile_on,
+            text: text_signal,
+            pii: pii_signal,
+            image: image_signal,
+            ocr: ocr_signal,
             ..Signals::default()
         };
-        signals.text = Signal {
-            score: event.toxicity,
-            label: "minimal_explicit_threat_fallback".into(),
-            status: Status::Built,
-            backend: Backend::Heuristic,
-            confidence: 0.3,
-            details: BTreeMap::new(),
-        };
+        let mut reasons = behavior.reasons;
+        reasons.extend(text_reasons);
+        if let Some(ocr) = ocr_report {
+            if ocr.signal.score >= 0.5 {
+                reasons.push(Reason {
+                    code: "OCR_ABUSE".into(),
+                    text: "Abusive text detected in image screenshot".into(),
+                    weight: ocr.signal.score,
+                    evidence: BTreeMap::from([(
+                        "ocr_text".into(),
+                        serde_json::json!(ocr.masked_text),
+                    )]),
+                });
+            }
+        }
         let mut degraded = behavior.degraded;
         degraded.extend(registry.degradation());
-        degraded.extend([
-            "text.onnx_missing".into(),
-            "text.minimal_threat_fallback".into(),
-            "call.behavior_model_unavailable".into(),
-        ]);
+        degraded.extend(text_degraded);
+        degraded.extend(image_degraded);
+        degraded.extend(ocr_degraded);
+        degraded.extend(["call.behavior_model_unavailable".into()]);
+        degraded.sort();
+        degraded.dedup();
         let input = hre_fusion::FusionInput {
             signals: signals.clone(),
-            reasons: behavior.reasons,
+            reasons,
             degraded,
             threat: event.threat,
+            unsolicited_explicit,
+            reported_hash_match,
             after_refusal_count: behavior.after_refusal_count,
             healthy_reciprocity: behavior.healthy_reciprocity,
             reply_to_harasser: behavior.reply_to_harasser,
             feed_protection: behavior.feed_protection,
-            simulated: behavior.simulated,
+            simulated: behavior.simulated
+                || image_analysis.as_ref().is_some_and(|i| i.simulated)
+                || reported_hash_match,
             ..hre_fusion::FusionInput::default()
         };
         let fused = hre_fusion::fuse(&input, fusion_config);
+        let mut recommended_action = fused.recommended_action;
+        if (unsolicited_explicit || ocr_report.as_ref().is_some_and(|o| o.signal.score >= 0.5))
+            && fused.tier != Tier::Low
+        {
+            recommended_action = Action::BlurMedia;
+        }
         AnalyzeResponse {
             event_id,
             severity: fused.severity,
             tier: fused.tier,
             reasons: fused.reasons,
             signals,
-            recommended_action: fused.recommended_action,
+            recommended_action,
             secondary_actions: fused.secondary_actions,
             alert_id: None,
             latency_ms: 0,
             model_versions: BTreeMap::from([
+                ("text_pipeline".into(), "0.1.0".into()),
+                ("vision_pipeline".into(), "0.1.0".into()),
                 ("behavior_rules".into(), "0.1.0".into()),
                 ("fusion_rules".into(), "0.1.0".into()),
             ]),
@@ -356,6 +524,38 @@ impl Engine {
             Some(store) => Ok(store.feed_protected(id).await?),
             None => Ok(false),
         }
+    }
+    pub async fn report(&self, request: &ReportRequest) -> Result<(), ApiError> {
+        let store = self.store.as_ref().ok_or_else(|| {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "real engine unavailable")
+        })?;
+        let _gate = self.gate.lock().await;
+        let cached = store.assessment(&request.event_id.to_string()).await?;
+        let (phash, sha) = if let Some(val) = cached {
+            let phash = val
+                .pointer("/response/signals/image/details/p_hash")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sha = val
+                .pointer("/response/signals/image/details/sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            (phash, sha)
+        } else {
+            (
+                0u64,
+                format!(
+                    "{:x}",
+                    <sha2::Sha256 as sha2::Digest>::digest(request.event_id.as_bytes())
+                ),
+            )
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        store
+            .insert_reported_hash(phash, &sha, &request.reason, now)
+            .await?;
+        Ok(())
     }
 }
 fn cached_response(

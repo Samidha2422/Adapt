@@ -18,6 +18,8 @@ hre-store = { path = "../hre-store" }
 hre-behavior = { path = "../hre-behavior" }
 hre-fusion = { path = "../hre-fusion" }
 hre-ml = { path = "../hre-ml" }
+hre-text = { path = "../hre-text" }
+hre-vision = { path = "../hre-vision" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true

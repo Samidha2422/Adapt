@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/hre-core", "crates/hre-api", "crates/hre-store", "crates/hre-ml", "crates/hre-behavior", "crates/hre-fusion"]
+members = [
+    "crates/hre-core",
+    "crates/hre-api",
+    "crates/hre-store",
+    "crates/hre-ml",
+    "crates/hre-behavior",
+    "crates/hre-fusion",
+    "crates/hre-text",
+    "crates/hre-vision",
+]
 
 [workspace.package]
 version = "0.1.0"

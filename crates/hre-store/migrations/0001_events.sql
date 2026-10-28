@@ -22,3 +22,10 @@ CREATE TABLE IF NOT EXISTS feed_protection (
     recipient TEXT PRIMARY KEY NOT NULL,
     protected INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reported_hashes (
+    p_hash INTEGER NOT NULL,
+    sha256 TEXT PRIMARY KEY NOT NULL,
+    label TEXT NOT NULL,
+    reported_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reported_hashes_phash ON reported_hashes(p_hash);

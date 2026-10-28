@@ -797,6 +797,8 @@ dependencies = [
  "hre-fusion",
  "hre-ml",
  "hre-store",
+ "hre-text",
+ "hre-vision",
  "http-body-util",
  "serde",
  "serde_json",
@@ -876,6 +878,31 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "hre-text"
+version = "0.1.0"
+dependencies = [
+ "hre-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "hre-vision"
+version = "0.1.0"
+dependencies = [
+ "hre-core",
+ "hre-text",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

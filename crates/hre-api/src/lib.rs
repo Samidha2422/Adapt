@@ -64,6 +64,7 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/v1/health/models", get(health_models))
         .route("/v1/analyze", post(analyze))
         .route("/v1/events/refusal", post(refusal))
+        .route("/v1/reports", post(report))
         .route("/v1/stream/alerts", get(stream_alerts))
         .route("/v1/alerts", get(alert_list))
         .route("/v1/subjects/{id}/feed-protection", get(feed_protection))
@@ -232,6 +233,15 @@ async fn refusal(
     state.engine.refusal(&request).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+#[utoipa::path(post, path = "/v1/reports", request_body = ReportRequest, responses((status = 204), (status = 401, body = Problem), (status = 422, body = Problem)), security(("api_key" = []), ("moderator" = [])))]
+async fn report(
+    State(state): State<Shared>,
+    input: Result<Json<ReportRequest>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(request) = input.map_err(json_error)?;
+    state.engine.report(&request).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 #[utoipa::path(get, path = "/v1/stream/alerts", responses((status = 200, description = "SSE alert and resync events", content_type = "text/event-stream"), (status = 401, body = Problem)), security(("moderator" = [])))]
 async fn stream_alerts(
     State(state): State<Shared>,
@@ -315,7 +325,7 @@ impl Modify for Security {
     }
 }
 #[derive(OpenApi)]
-#[openapi(info(title = "Harassment Risk Engine", version = "0.1.0"), paths(health, health_models, analyze, refusal, stream_alerts, alert_list, feed_protection, reset),
+#[openapi(info(title = "Harassment Risk Engine", version = "0.1.0"), paths(health, health_models, analyze, refusal, report, stream_alerts, alert_list, feed_protection, reset),
     components(schemas(AnalyzeRequest, AnalyzeResponse, Problem, HealthResponse, RefusalRequest, ReportRequest, ReviewRequest, FeedProtection)), modifiers(&Security))]
 struct Contract;
 /// Source of truth for both the served contract and committed JSON export.

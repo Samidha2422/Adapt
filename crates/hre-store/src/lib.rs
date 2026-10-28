@@ -304,6 +304,68 @@ impl Store {
             .map(|s| serde_json::from_str(&s).map_err(StoreError::from))
             .transpose()
     }
+
+    /// Insert a reported perceptual hash and SHA-256 for abuse detection (hash-only storage).
+    pub async fn insert_reported_hash(
+        &self,
+        p_hash: u64,
+        sha256: &str,
+        label: &str,
+        reported_at: i64,
+    ) -> Result<bool, StoreError> {
+        let inserted = sqlx::query(
+            "INSERT INTO reported_hashes(p_hash, sha256, label, reported_at) VALUES(?,?,?,?) ON CONFLICT(sha256) DO NOTHING",
+        )
+        .bind(p_hash as i64)
+        .bind(sha256)
+        .bind(label)
+        .bind(reported_at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1;
+        Ok(inserted)
+    }
+
+    /// Query reported hashes and find the closest match within max_hamming_distance.
+    pub async fn find_reported_hash(
+        &self,
+        p_hash: u64,
+        max_distance: u32,
+    ) -> Result<Option<ReportedHashMatch>, StoreError> {
+        let rows = sqlx::query("SELECT p_hash, sha256, label FROM reported_hashes")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut best: Option<ReportedHashMatch> = None;
+        for row in rows {
+            let row_phash = row.try_get::<i64, _>("p_hash")? as u64;
+            let dist = (p_hash ^ row_phash).count_ones();
+            if dist <= max_distance {
+                let candidate = ReportedHashMatch {
+                    p_hash: row_phash,
+                    sha256: row.try_get::<&str, _>("sha256")?.to_string(),
+                    label: row.try_get::<&str, _>("label")?.to_string(),
+                    distance: dist,
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|b| candidate.distance < b.distance)
+                {
+                    best = Some(candidate);
+                }
+            }
+        }
+        Ok(best)
+    }
+}
+
+/// A matched reported hash result with Hamming distance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedHashMatch {
+    pub p_hash: u64,
+    pub sha256: String,
+    pub label: String,
+    pub distance: u32,
 }
 
 #[cfg(test)]
@@ -441,6 +503,36 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+    #[tokio::test]
+    async fn test_reported_hashes_insert_and_find_within_distance() {
+        let store = Store::connect("sqlite::memory:").await.unwrap();
+        let p_hash = 0b1010101010101010u64;
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert!(store
+            .insert_reported_hash(p_hash, sha, "ncii_test", 1000)
+            .await
+            .unwrap());
+        // Duplicate sha256 insert should return false (idempotent)
+        assert!(!store
+            .insert_reported_hash(p_hash, sha, "ncii_test", 1000)
+            .await
+            .unwrap());
+
+        // Exact match (distance 0)
+        let exact = store.find_reported_hash(p_hash, 0).await.unwrap();
+        assert!(exact.is_some());
+        assert_eq!(exact.unwrap().distance, 0);
+
+        // Near match (distance 2)
+        let near_hash = p_hash ^ 0b11;
+        let found = store.find_reported_hash(near_hash, 2).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().distance, 2);
+
+        // Outside threshold (distance 2 with threshold 1)
+        let outside = store.find_reported_hash(near_hash, 1).await.unwrap();
+        assert!(outside.is_none());
     }
     proptest::proptest! {
         #[test]

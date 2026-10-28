@@ -5,7 +5,7 @@ if (-not $key) { throw 'Export HRE_API_KEYS before seeding' }
 $headers = @{ 'X-API-Key' = $key }
 $run = [guid]::NewGuid().ToString('N')
 $start = [datetime]::UtcNow.AddMinutes(-30)
-function Send-Event([string] $Sender, [string] $Recipient, [int] $Offset, [bool] $Blocked = $false, [bool] $Call = $false) {
+function Send-Event([string] $Sender, [string] $Recipient, [int] $Offset, [bool] $Blocked = $false, [bool] $Call = $false, [string] $ImageCaption = $null) {
     $body = @{
         event_id = [guid]::NewGuid().ToString()
         kind = 'message'
@@ -23,6 +23,11 @@ function Send-Event([string] $Sender, [string] $Recipient, [int] $Offset, [bool]
         $body.channel.type = 'call'
         $body.call = @{ direction = 'outgoing'; answered = $true; duration_s = 900; voicemail = $false }
         $body.context.is_contact = $true
+    }
+    if ($ImageCaption) {
+        $body.Remove('message')
+        $body.kind = 'image'
+        $body.media = @{ mime = 'image/png'; caption = $ImageCaption }
     }
     Invoke-RestMethod -Method Post -Uri "$BaseUrl/v1/analyze" -Headers $headers -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 8)
 }
@@ -66,4 +71,13 @@ for ($i = 0; $i -lt 5; $i++) {
     if ($a.tier -ne 'low' -or $b.tier -ne 'low') { throw 'Healthy answered calls flagged' }
 }
 Assert-Tier $b 'low' '7 healthy couple'
-Write-Output 'Real scenarios 1, 2, 7 checked on synthetic inputs. Scenarios 3-6,8-9 require teammate integration.'
+
+$cf = Send-Event "cyberflasher-$run" "target-$run" 1300 $false $false 'cyberflashing'
+Assert-Tier $cf 'high' '3 cyberflashing'
+if ($cf.recommended_action -ne 'blur_media') { throw 'Cyberflashing did not blur media' }
+
+$meme = Send-Event "meme-$run" "target-$run" 1310 $false $false 'I will kill you and your family'
+Assert-Tier $meme 'high' '4 screenshot meme'
+if ($meme.recommended_action -ne 'blur_media') { throw 'Screenshot meme did not blur media' }
+
+Write-Output 'Real scenarios 1, 2, 3, 4, 7 checked on synthetic inputs. Scenarios 5-6,8-9 require teammate integration.'

@@ -1,3 +1,4 @@
 # Populate only with SHA-256 hashes of consented benign demo assets.
 # Applying any entry must set simulated=true and signal status=simulated.
 [assets]
+"cf10000000000000000000000000000000000000000000000000000000000001" = 0.95
