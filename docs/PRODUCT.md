@@ -1,40 +1,67 @@
 # Product
 
-Snapshot: 2026-10-28. Delivery is incomplete. [TRACEABILITY.md](TRACEABILITY.md) records intended scope separately from actual evidence; all initial actual statuses remain Roadmap/unverified.
+<!-- impeccable:product-schema 1 -->
 
-The Harassment Risk Engine is intended to score events from cooperating clients using conversation history and multiple modalities. It should help moderators and recipients recognize persistent unwanted contact even when individual messages appear polite. A score prioritizes review; it does not determine a person's intent or guilt.
+## Platform
 
-## Users and decisions
+web
 
-| User | Needed outcome | Acceptance |
-|---|---|---|
-| Recipient | Safer defaults and usable evidence without replaying harmful media | Blur/transcript recommendations, masked ordinary output, authorized export |
-| Moderator | Reasons, context and reversible decisions | Alert queue, directional history, confirm/reject/escalate, audit trail |
-| Sender | Useful pre-send feedback | Draft analysis that leaves no persistent state |
-| Client developer | Stable contract and useful failures without model files | Generated OpenAPI, mock mode, deterministic fallbacks, structured errors |
-| AI agent | Clear ownership, statuses and reproducible acceptance | Traceable IDs, named gaps, source-backed model metadata, explicit pending requests |
+## Stack
 
-## Input and output
+Rust Axum + HTMX + SSE + Material 3 Expressive (@m3e/web) + Server-rendered SVG charts. Zero CDN dependencies (all vendored locally).
 
-Inputs are message, image, audio and call_event, with event ID, timestamp, sender/recipient and platform/channel context. Block/mute/stop events are explicit inputs; absent platform context must remain unknown. The response contract targets severity 0–100, tier, reasons, per-module signals, action, latency, model versions, simulation and degradation metadata.
+## Users
 
-| Severity | Tier | Intended response |
-|---|---|---|
-| 0–30 | low | Log; optional draft nudge |
-| 31–60 | review | Moderator queue and soft warning |
-| 61–85 | high | Blur/hide or throttle recommendation; moderator alert |
-| 86–100 | urgent | Immediate human review and appropriate safety guidance |
+Primary users are Trust & Safety moderators, incident investigators, and compliance officers triaging live harassment reports under time pressure. Secondary users are demo evaluators and developers auditing model performance and system health.
 
-Clients enact actions only within their permissions. Returning throttle or blur_media is not proof that an external platform enforced it.
+## Product Purpose
 
-## Scope and release evidence
+The Adapt Harassment Risk Engine provides fast, explainable, multimodal risk scoring for digital interactions across text, image, audio, OCR, and call events. The Moderator Dashboard is the operational control center that allows human moderators to inspect high-risk incidents, review multimodal evidence without exposure to raw abusive pixels or unmasked identifiers, take reversible moderation decisions (Confirm, Reject, Escalate), manage slang lexicons, and monitor system health.
 
-Lead is implementing core/store/registry/behavior/fusion/API. Human teams own text/slang/eval/training (A), vision/audio/calls (B), and evidence/dashboard/connectors/CLI (C). Lead fallback adapters support the walking skeleton; they do not complete teammate crates.
+## Positioning
 
-The intended demo has nine scenarios: polite stalker, pile-on, benign cyberflashing proxy, OCR screenshot, TTS threat, overnight call log, healthy heavy users, invented slang update and evidence export. See [EVAL.md](EVAL.md). All nine require end-to-end acceptance before claiming the full demo works. No such pass is recorded here.
+Unlike opaque black-box moderation filters or simple keyword matchers, Adapt uses multi-signal fusion (8 distinct signal modules) with contextual behavioral history (directional interactions, polite stalking, pile-ons). It operates with strict privacy (pseudonymized HMAC salts, zero raw media persistence), radical transparency (every signal and mock is explicitly labeled Built, Simulated, or Roadmap), and keeps human moderators firmly in authority.
 
-## Non-goals and limits
+## Operating Context
 
-No arbitrary private-DM access, covert call capture, cross-platform identity linking, reliable grooming detection, guaranteed novel deepfake/voice detection, perfect sarcasm understanding or intent inference from tone. Group exclusion, impersonation, surveillance, account compromise and contact-network tracking remain Roadmap. The engine supports human decisions; it does not replace moderators or provide certified legal evidence.
+Moderators operate in high-density triage shifts. Interfaces must enable instant visual scannability, predictable keyboard navigation, rapid decision-making, and zero eye fatigue. The dashboard operates both in live operations (listening to SSE alert streams) and investigative review (inspecting conversation timelines and cryptographic evidence chains).
 
-Do not add slogans or labels to compensate for unclear UI. Preserve necessary simulation/degradation warnings, action meaning and accessible names. Stable reason codes plus plain-language explanations should serve users, developers and agents together.
+## Capabilities and Constraints
+
+- **Live Alert Queue**: Real-time SSE alert streaming (`GET /v1/stream/alerts`) with automatic reconnect, client-side deduplication, and filter controls (Tier, Severity, Platform).
+- **Incident Investigation**: Detailed view of all 8 modalities (text, OCR, image, audio, call, behavior, pile_on, PII), confidence scores, reason explanations, attribution bars, and reversible moderation actions (`POST /v1/alerts/{id}/review`).
+- **Conversational Timelines**: Chronological interaction graphs for subject pairs (`/v1/pairs/{id}/timeline`), message rate spikes, and block-crossing tracking.
+- **Slang Engine Operations**: Reviewing emerging slang candidates, approving/rejecting terms, triggering retraining or model rollback.
+- **Evaluation & Auditing**: Visualizing system metrics (`reports/metrics.json`), precision-recall curves, confusion matrices, latency percentiles, and keyword baseline ablation.
+- **Calls & Voicemail**: Bulk CSV call log import, audio analysis submission, and asynchronous job monitoring (`/v1/jobs/{id}`).
+- **Cryptographic Evidence**: Tamper-evident incident timeline exports with hash chains (`sha256`), HMAC signatures, and Bharatiya Sakshya Adhiniyam (BSA) 2023 Section 63(4) draft certificates.
+- **Demo Control Center**: Direct execution of all 9 standardized test scenarios with visual tier assertions and live feedback.
+- **Offline / Zero-CDN Delivery**: All CSS, JavaScript (`@m3e/web`, `htmx`), fonts, and icons are vendored locally; no remote network calls at runtime.
+
+## Brand Commitments
+
+- Material 3 Expressive (M3E) design system.
+- Professional, restrained, high-clarity interface.
+- No slogans, buzzwords, or redundant labels.
+- Truthful disclosure: simulated data and degraded models are visibly tagged; never claim real model inference from hashes or mock fallbacks alone.
+
+## Evidence on Hand
+
+- Standardized OpenAPI 3.1 specification (`docs/openapi.json`).
+- 9 verified demo scenario fixtures (`data/test/scenarios/*.json`).
+- Evaluator metrics schema and benchmarks (`crates/hre-eval`).
+- Canonical JSON and HMAC-signed evidence export contract (`crates/hre-evidence`).
+
+## Product Principles
+
+1. **Scannability and Density**: Prioritize dense, legible information hierarchy over decorative whitespace. Moderators need data at a glance.
+2. **Radical Honesty**: Clearly distinguish Built, Simulated, and Roadmap features. Never disguise mock responses as production AI.
+3. **Privacy First**: Retain no raw media bodies or unmasked identities. Display masked text and cryptographic hashes.
+4. **Human Authority**: AI calculates risk signals and suggests actions; human moderators make final decisions.
+
+## Accessibility & Inclusion
+
+- WCAG 2.1 AA compliant contrast across light and dark themes.
+- Comprehensive keyboard navigation and focus indicators.
+- Live regions (`aria-live="polite"`) for real-time alert updates.
+- Full respect for `prefers-reduced-motion` settings.

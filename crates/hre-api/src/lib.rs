@@ -101,6 +101,8 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/v1/admin/demo/reset", post(reset))
         .route("/openapi.json", get(schema))
         .route("/docs", get(docs))
+        .route("/", get(dashboard_redirect))
+        .merge(hre_dashboard::router())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(1024 * 1024))
@@ -153,9 +155,15 @@ impl From<hre_store::StoreError> for ApiError {
     }
 }
 
+async fn dashboard_redirect() -> impl IntoResponse {
+    axum::response::Redirect::temporary("/dashboard")
+}
+
 async fn authorize(State(state): State<Shared>, request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    if matches!(path, "/v1/health" | "/openapi.json" | "/docs") {
+    if path.starts_with("/dashboard")
+        || matches!(path, "/" | "/v1/health" | "/openapi.json" | "/docs")
+    {
         return next.run(request).await;
     }
     let moderator = request

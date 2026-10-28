@@ -24,6 +24,7 @@ hre-calls = { path = "../hre-calls" }
 hre-audio = { path = "../hre-audio" }
 hre-slang = { path = "../hre-slang" }
 hre-evidence = { path = "../hre-evidence" }
+hre-dashboard = { path = "../hre-dashboard" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true

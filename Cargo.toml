@@ -14,6 +14,7 @@ members = [
     "crates/hre-slang",
     "crates/hre-evidence",
     "crates/hre-eval",
+    "crates/hre-dashboard",
 ]
 
 [workspace.package]
