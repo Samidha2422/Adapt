@@ -844,7 +844,7 @@ impl Engine {
         onnx_calls: Option<&hre_ml::OnnxBehaviorModel>,
     ) -> AnalyzeResponse {
         let behavior_backend = onnx_behavior.map(|b| b as &dyn hre_ml::InferenceBackend);
-        let behavior = hre_behavior::analyze_with_backend(
+        let mut behavior = hre_behavior::analyze_with_backend(
             events,
             &event.sender,
             &event.recipient,
@@ -852,6 +852,21 @@ impl Engine {
             behavior_config,
             behavior_backend,
         );
+        // A newly opened conversation is outside the behavior model's training
+        // baseline. Do not let its one-message prediction dominate text evidence.
+        if !has_behavior_history(&behavior.features) {
+            let raw_probability = behavior.behavior.score;
+            behavior.behavior.score = 0.0;
+            behavior.behavior.confidence = 0.0;
+            behavior.behavior.label = "insufficient_history".into();
+            behavior.behavior.details.insert(
+                "suppressed_model_probability".into(),
+                serde_json::json!(raw_probability),
+            );
+            behavior
+                .degraded
+                .push("behavior.insufficient_history".into());
+        }
         let calls: Vec<_> = events
             .iter()
             .filter(|item| {
@@ -1399,6 +1414,10 @@ impl Engine {
         }
     }
 }
+
+fn has_behavior_history(features: &hre_behavior::Features) -> bool {
+    features.get("msg_count_7d") > 1.0
+}
 fn image_hash_key(sha: &str) -> Result<u64, ApiError> {
     if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ApiError::new(
@@ -1444,6 +1463,16 @@ fn refusal_active(markers: &[StoredEvent]) -> bool {
 #[cfg(test)]
 mod call_model_tests {
     use super::*;
+
+    #[test]
+    fn behavior_model_is_not_used_as_risk_evidence_for_a_single_message() {
+        let mut features = hre_behavior::Features::default();
+        features.values.insert("msg_count_7d".into(), 1.0);
+        assert!(!has_behavior_history(&features));
+        features.values.insert("msg_count_7d".into(), 2.0);
+        assert!(has_behavior_history(&features));
+    }
+
     #[test]
     fn call_vector_preserves_order_direction_time_and_reciprocity() {
         let current = StoredEvent {
