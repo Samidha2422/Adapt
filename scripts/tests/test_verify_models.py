@@ -102,6 +102,19 @@ class VerificationTests(unittest.TestCase):
                 verifier.verify(self.root)
 
     @unittest.skipIf(onnx is None, "onnx package unavailable")
+    def test_ocr_manifest_requires_its_detector(self):
+        self.model["task"] = "ocr"
+        self.model["outputs"] = [{"name": "token_probabilities", "dtype": "float32", "shape": [1, 80, 256]}]
+        self.tiny([1, 80, 256], name="token_probabilities")
+        with self.assertRaises(FileNotFoundError):
+            verifier.verify(self.root)
+
+    def test_detector_hash_is_checked_before_graph_parsing(self):
+        (self.root / "ocr_detector.onnx").write_bytes(b"changed detector")
+        with self.assertRaisesRegex(ValueError, "ocr_detector: SHA256 mismatch"):
+            verifier.verify_detector(self.root)
+
+    @unittest.skipIf(onnx is None, "onnx package unavailable")
     def test_real_graph_matches_and_rejects_mismatches(self):
         self.tiny([1, 2])
         verifier.verify(self.root)

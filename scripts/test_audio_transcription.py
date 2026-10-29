@@ -9,22 +9,16 @@ Validates:
 6. Robust rejection on invalid, empty, or truncated audio streams.
 """
 
-import math
+from __future__ import annotations
+
+import json
 from pathlib import Path
 import subprocess
 import sys
 import time
 import wave
-import numpy as np
-import scipy.signal
-import onnxruntime as ort
-from transformers import WhisperFeatureExtractor, WhisperTokenizer
 
 MODELS_DIR = Path("models")
-ENCODER_PATH = MODELS_DIR / "whisper_encoder.onnx"
-DECODER_PATH = MODELS_DIR / "whisper_decoder.onnx"
-TOKENIZER_CONFIG = MODELS_DIR / "whisper_tokenizer.json"
-PREPROCESSOR_CONFIG = MODELS_DIR / "whisper_preprocessor_config.json"
 
 # Special Whisper token IDs
 TOKEN_START_OF_TRANSCRIPT = 50258
@@ -59,25 +53,26 @@ class SafeAudioDecoder:
                     raise ValueError(f"unsupported sample width: {sample_width * 8}-bit (must be 16-bit PCM)")
                 if rate not in (8000, 16000, 22050, 24000, 32000, 44100, 48000):
                     raise ValueError(f"unsupported sample rate: {rate} Hz")
+                if n_channels not in (1, 2):
+                    raise ValueError("unsupported channels (must be mono or stereo)")
+                if n_frames == 0 or n_frames / rate > cls.MAX_DURATION_S:
+                    raise ValueError("empty audio or duration exceeds limit")
 
                 raw_bytes = w.readframes(n_frames)
+                if len(raw_bytes) != n_frames * n_channels * sample_width:
+                    raise ValueError("truncated PCM frames")
         except Exception as e:
             if isinstance(e, ValueError):
                 raise
             raise ValueError(f"audio decode failed: {e}")
 
         # Convert to int16 then normalize to float32 [-1.0, 1.0]
-        samples = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        import numpy as np
+        samples = np.frombuffer(raw_bytes, dtype="<i2").astype(np.float32) / 32768.0
 
         # Downmix stereo to mono if needed
         if n_channels == 2:
             samples = samples.reshape(-1, 2).mean(axis=1)
-        elif n_channels != 1:
-            raise ValueError(f"unsupported channels: {n_channels} (must be mono or stereo)")
-
-        duration_s = len(samples) / rate
-        if duration_s > cls.MAX_DURATION_S:
-            raise ValueError(f"audio duration {duration_s:.1f}s exceeds limit {cls.MAX_DURATION_S}s")
 
         return samples, rate
 
@@ -85,39 +80,48 @@ class SafeAudioDecoder:
     def resample_to_16k(cls, samples: np.ndarray, orig_rate: int) -> np.ndarray:
         if orig_rate == 16000:
             return samples
+        import numpy as np
+        import scipy.signal
         target_len = int(round(len(samples) * 16000.0 / orig_rate))
         return scipy.signal.resample(samples, target_len).astype(np.float32)
 
 class WhisperTranscriber:
     """End-to-end Whisper ONNX speech recognition pipeline."""
-    def __init__(self):
-        assert ENCODER_PATH.exists(), f"Encoder not found: {ENCODER_PATH}"
-        assert DECODER_PATH.exists(), f"Decoder not found: {DECODER_PATH}"
+    def __init__(self, models_dir: Path | str | None = None):
+        directory = Path(models_dir) if models_dir is not None else MODELS_DIR
+        encoder, decoder, tokenizer, preprocessor = (
+            directory.resolve() / name for name in (
+                "whisper_encoder.onnx", "whisper_decoder.onnx",
+                "whisper_tokenizer.json", "whisper_preprocessor_config.json",
+            )
+        )
+        for asset in (encoder, decoder, tokenizer, preprocessor):
+            if not asset.is_file():
+                raise FileNotFoundError("missing local Whisper asset")
+
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+        from transformers import WhisperFeatureExtractor
 
         # Initialize ONNX sessions
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 4
         opts.intra_op_num_threads = 4
-        self.encoder = ort.InferenceSession(str(ENCODER_PATH), opts, providers=["CPUExecutionProvider"])
-        self.decoder = ort.InferenceSession(str(DECODER_PATH), opts, providers=["CPUExecutionProvider"])
+        opts.log_severity_level = 3
+        self.encoder = ort.InferenceSession(str(encoder), opts, providers=["CPUExecutionProvider"])
+        self.decoder = ort.InferenceSession(str(decoder), opts, providers=["CPUExecutionProvider"])
 
         # Feature extractor & tokenizer
-        self.feature_extractor = WhisperFeatureExtractor.from_pretrained(str(PREPROCESSOR_CONFIG))
-        self.tokenizer = WhisperTokenizer.from_pretrained("openai/whisper-tiny", clean_up_tokenization_spaces=False)
+        self.feature_extractor = WhisperFeatureExtractor(**json.loads(preprocessor.read_text(encoding="utf-8")))
+        self.tokenizer = Tokenizer.from_file(str(tokenizer))
 
     def transcribe(self, samples_16k: np.ndarray, max_new_tokens: int = 64) -> dict:
+        import numpy as np
         # Check for silence: RMS energy threshold
         rms = np.sqrt(np.mean(samples_16k ** 2)) if len(samples_16k) > 0 else 0.0
-        if rms < 0.001 or len(samples_16k) < 1600:  # < 0.1s or silent
-            return {
-                "transcript": "",
-                "language": "en",
-                "rms": float(rms),
-                "is_silence": True,
-                "tokens": [],
-            }
+        is_silence = rms < 0.001 or len(samples_16k) < 1600
 
-        # Extract 80-channel log-mel spectrogram features
+        # shortcut: only the first 30 seconds are decoded; chunk before supporting long recordings.
         fe_out = self.feature_extractor(samples_16k, sampling_rate=16000, return_tensors="np")
         mel = fe_out.input_features  # [1, 80, 3000]
 
@@ -137,7 +141,8 @@ class WhisperTranscriber:
         tokens = list(prefix)
 
         t1 = time.time()
-        for _ in range(max_new_tokens):
+        # Even silence executes both graphs before being reported as analyzed.
+        for _ in range(1 if is_silence else max_new_tokens):
             input_ids = np.array([tokens], dtype=np.int64)
             logits = self.decoder.run(["logits"], {
                 "input_ids": input_ids,
@@ -151,14 +156,14 @@ class WhisperTranscriber:
 
         dec_time = time.time() - t1
         generated_tokens = tokens[len(prefix):]
-        raw_text = self.tokenizer.decode(generated_tokens)
-        clean_text = raw_text.strip()
+        raw_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        clean_text = "" if is_silence else raw_text.strip()
 
         return {
             "transcript": clean_text,
             "language": "en",
             "rms": float(rms),
-            "is_silence": False,
+            "is_silence": bool(is_silence),
             "tokens": generated_tokens,
             "enc_time_s": enc_time,
             "dec_time_s": dec_time,
@@ -207,13 +212,11 @@ def run_tests():
     res1 = transcriber.transcribe(samples1_16k)
     
     print(f"Decoded: rate={rate1}Hz, len={len(samples1)} samples ({len(samples1)/rate1:.2f}s)")
-    print(f"Transcribed Text: \"{res1['transcript']}\"")
-    print(f"Tokens: {res1['tokens']}")
     print(f"Latency: Enc={res1['enc_time_s']:.3f}s, Dec={res1['dec_time_s']:.3f}s ({res1['tokens_per_s']:.1f} tok/s)")
     
     t1_norm = res1["transcript"].lower().replace(".", "").strip()
-    assert "stop calling me" in t1_norm or "stop calling" in t1_norm, f"Unexpected transcript: {res1['transcript']}"
-    test_results.append(("Real Speech 1 ('stop calling me')", "PASS", res1["transcript"]))
+    assert "stop calling me" in t1_norm or "stop calling" in t1_norm, "Unexpected speech transcription"
+    test_results.append(("Real Speech 1 ('stop calling me')", "PASS", "Expected phrase recognized"))
 
     # -------------------------------------------------------------
     # Test Case 2: Real Speech - Harassment phrase
@@ -230,12 +233,11 @@ def run_tests():
     res2 = transcriber.transcribe(samples2_16k)
 
     print(f"Decoded: rate={rate2}Hz, len={len(samples2)} samples ({len(samples2)/rate2:.2f}s)")
-    print(f"Transcribed Text: \"{res2['transcript']}\"")
     print(f"Latency: Enc={res2['enc_time_s']:.3f}s, Dec={res2['dec_time_s']:.3f}s ({res2['tokens_per_s']:.1f} tok/s)")
 
     t2_norm = res2["transcript"].lower().replace(".", "").strip()
-    assert "leave me alone" in t2_norm, f"Unexpected transcript: {res2['transcript']}"
-    test_results.append(("Real Speech 2 (Harassment warning)", "PASS", res2["transcript"]))
+    assert "leave me alone" in t2_norm, "Unexpected speech transcription"
+    test_results.append(("Real Speech 2 (Harassment warning)", "PASS", "Expected phrase recognized"))
 
     # -------------------------------------------------------------
     # Test Case 3: Pure Silence Audio (Zero Waveform)
@@ -252,8 +254,7 @@ def run_tests():
 
     print(f"Silence RMS: {res3['rms']:.6f}")
     print(f"Is Silence:  {res3['is_silence']}")
-    print(f"Transcript:  \"{res3['transcript']}\"")
-    assert res3["transcript"] == "", f"Expected empty transcript for silence, got '{res3['transcript']}'"
+    assert res3["transcript"] == "", "Expected empty transcript for silence"
     assert res3["is_silence"] is True
     test_results.append(("Pure Silence Detection", "PASS", "Empty transcript / is_silence=True"))
 
@@ -300,5 +301,22 @@ def run_tests():
     print("=" * 70)
     print("ALL AUDIO TRANSCRIPTION TESTS PASSED SUCCESSFULLY!")
 
+def run_worker(models_dir: str, wav_path: str):
+    """Emit only the private IPC result; diagnostics never contain audio or text."""
+    import contextlib
+    import os
+    with open(os.devnull, "w") as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+        samples, rate = SafeAudioDecoder.decode_wav_bytes(Path(wav_path).read_bytes())
+        result = WhisperTranscriber(models_dir).transcribe(SafeAudioDecoder.resample_to_16k(samples, rate))
+        result["duration_s"] = len(samples) / rate
+    print(json.dumps({key: result[key] for key in ("transcript", "language", "duration_s")}))
+
+
 if __name__ == "__main__":
-    run_tests()
+    if len(sys.argv) == 4 and sys.argv[1] == "--worker":
+        try:
+            run_worker(sys.argv[2], sys.argv[3])
+        except Exception:
+            sys.exit(1)
+    else:
+        run_tests()

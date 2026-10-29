@@ -92,11 +92,13 @@ async fn upload_image(
 }
 
 #[tokio::test]
+#[ignore = "requires the genuine NSFW model and image fixtures; run just multimodal-smoke"]
 async fn test_real_api_nsfw_classification_negative_and_positive() {
     let models_dir = find_models_dir();
-    if !models_dir.join("nsfw.onnx").exists() {
-        return;
-    }
+    assert!(
+        models_dir.join("nsfw.onnx").is_file(),
+        "transfer the genuine NSFW model first"
+    );
 
     let app = hre_api::router(config(), false).await.unwrap();
 
@@ -141,11 +143,13 @@ async fn test_real_api_nsfw_classification_negative_and_positive() {
 }
 
 #[tokio::test]
+#[ignore = "requires genuine deepfake/NSFW models and fixtures; run just multimodal-smoke"]
 async fn test_real_api_deepfake_classification_authentic_fake_and_composite() {
     let models_dir = find_models_dir();
-    if !models_dir.join("deepfake.onnx").exists() {
-        return;
-    }
+    assert!(
+        models_dir.join("deepfake.onnx").is_file(),
+        "transfer the genuine deepfake model first"
+    );
 
     let app = hre_api::router(config(), false).await.unwrap();
 
@@ -228,10 +232,20 @@ async fn test_real_api_deepfake_classification_authentic_fake_and_composite() {
 }
 
 #[tokio::test]
+#[ignore = "requires genuine OCR models, vocabulary and fixtures; run just multimodal-smoke"]
 async fn test_real_api_ocr_pixel_recognition_single_and_multiline() {
     let models_dir = find_models_dir();
-    if !models_dir.join("ocr_recognizer.onnx").exists() {
-        return;
+    for name in [
+        "ocr_detector.onnx",
+        "ocr_recognizer.onnx",
+        "ocr_vocab.json",
+        "_test_fixtures/ocr_single_line.png",
+        "_test_fixtures/ocr_multiline.png",
+    ] {
+        assert!(
+            models_dir.join(name).is_file(),
+            "missing OCR artifact: {name}"
+        );
     }
 
     let app = hre_api::router(config(), false).await.unwrap();
@@ -376,10 +390,21 @@ async fn test_real_api_ocr_pixel_recognition_single_and_multiline() {
 }
 
 #[tokio::test]
+#[ignore = "requires genuine Whisper assets, Python dependencies and fixtures; run just multimodal-smoke"]
 async fn test_real_api_whisper_audio_speech_silence_and_invalid() {
     let models_dir = find_models_dir();
-    if !models_dir.join("whisper_encoder.onnx").exists() {
-        return;
+    for name in [
+        "whisper_encoder.onnx",
+        "whisper_decoder.onnx",
+        "whisper_tokenizer.json",
+        "whisper_preprocessor_config.json",
+        "_test_fixtures/speech_stop_calling_me.wav",
+        "_test_fixtures/silence.wav",
+    ] {
+        assert!(
+            models_dir.join(name).is_file(),
+            "missing Whisper artifact: {name}"
+        );
     }
 
     let app = hre_api::router(config(), false).await.unwrap();

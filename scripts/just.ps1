@@ -36,6 +36,10 @@ try {
         if ($Recipe -in @('bootstrap','fmt','format','lint','test','build','lock','run','mock','openapi','eval','bench')) { Get-Command cargo -ErrorAction Stop | Out-Null }
         if ($Recipe -like 'train-*') { Get-Command uv -ErrorAction Stop | Out-Null }
         switch ($Recipe) {
+            'audio-worker-test' { & python -m unittest discover -s scripts/tests -p 'test_audio_worker.py'; break }
+            'multimodal-smoke' { & cargo test -p hre-api --test multimodal_real_api --test media -- --ignored --test-threads=1; break }
+            'api-test' { & cargo test -p hre-api --tests -- --test-threads=1; break }
+            'api-lint' { & cargo clippy -p hre-api --all-targets -- -D warnings; break }
             'integration-smoke' { & cargo test -p hre-api --test model_runtime -- --ignored --test-threads=1; break }
             'bootstrap' { & cargo install just --version 1.40.0 --locked --root target/tools; break }
             'fmt' { & cargo fmt --all -- --check; break }

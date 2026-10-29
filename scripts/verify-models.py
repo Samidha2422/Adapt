@@ -114,7 +114,8 @@ def verify(root):
         if declared != actual_outputs:
             fail(f"{identifier}: ONNX output metadata does not match task contract")
         print(f"{identifier}: SHA256 and ONNX output metadata verified")
-    verify_detector(root)
+    if "ocr" in tasks:
+        verify_detector(root)
 
 
 DETECTOR_EXPECTED_HASH = "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff"

@@ -2,6 +2,12 @@
 
 Models run on the engine host. The Android app talks to the `aegis-demo` chat server, which calls the engine. The dashboard reads the same engine's stored alerts and runtime health. No model files or engine moderator credentials belong in the APK.
 
+The latest engine update adds actual audio-byte ingestion at `/v1/analyze/audio`.
+See [DEMO_MODEL_INTEGRATION.md](DEMO_MODEL_INTEGRATION.md) for the transferred
+artifact checklist, request contract and remaining demo changes. The JSON
+`/v1/recordings/analyze` route is a synthetic fixture/job interface. Its generated
+audio is always marked simulated and is not evidence of user-upload transcription.
+
 ## Engine and dashboard
 
 From the Adapt repository root, set these variables in the terminal that starts the engine:
@@ -45,7 +51,7 @@ The opt-in smoke test loads the transferred trained models, checks actual ONNX h
 
 The dashboard's overview, queue and alert detail use engine data. Historical evaluation reports are not live accuracy measurements, so missing current metrics remain unavailable. Moderator review must not report success without persistence; an unsupported review returns 501. These boundaries are separate from model integration.
 
-## Verification snapshot (2026-10-29)
+## Earlier verification snapshot (before the latest multimodal merge)
 
 `check` passed formatting, clippy and 220 Rust tests, with zero failures and six ignored tests. Ordinary API tests use an explicit model-free directory so manually transferred artifacts cannot change their baseline behavior.
 

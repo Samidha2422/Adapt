@@ -1,5 +1,23 @@
 # API changelog
 
+## 2026-10-29: Uploaded audio and synthetic input provenance
+
+- Add authenticated `POST /v1/analyze/audio`: multipart `request` (the existing
+  AnalyzeRequest with `kind=audio`) and `audio` (up to 25 MiB). The declared
+  media MIME must match the file part and detected format. Returns AnalyzeResponse.
+- Audio uses the configured transcription backend and the same text, behavior,
+  fusion, idempotency and alert pipeline as committed messages. Missing inference
+  stays degraded, with an unavailable audio signal reported as Roadmap/Disabled.
+- `signals.audio.details.transcript` contains the PII masked transcript in the
+  upload response only. Assessments, alert storage and SSE omit the transcript.
+  Retrying the same UUID with different audio bytes returns 409; drafts persist nothing.
+- Add optional `context.simulated` (default false). Synthetic client samples retain
+  this provenance in committed events and alerts without changing their risk scores.
+- Existing image multipart and message contracts remain compatible. Clients need
+  the updated engine before using the new audio route or synthetic context field.
+- `/v1/recordings/analyze` remains the legacy JSON fixture/job interface. It does
+  not accept uploaded audio; clients must use the new multipart audio route.
+
 ## Unreleased — 2026-10-28
 
 Contract freeze is pending/unverified. Parent is proceeding with P0 scaffold/core contract/mock. This sidecar has not inspected a final generated OpenAPI contract or verified any route. The endpoint matrix in TRACEABILITY is proposed scope from ENGINE_PROMPT, not a published implementation guarantee.

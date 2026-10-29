@@ -313,11 +313,13 @@ fn generated_contract_describes_actual_multipart_upload() {
 }
 
 #[tokio::test]
+#[ignore = "requires the genuine NSFW model; run explicitly with --ignored"]
 async fn onnx_image_inference_runs_when_model_present() {
     let models_dir = std::path::Path::new("../../models");
-    if !models_dir.join("nsfw.onnx").exists() {
-        return;
-    }
+    assert!(
+        models_dir.join("nsfw.onnx").is_file(),
+        "transfer the genuine NSFW model first"
+    );
     let mut cfg = config();
     cfg.models_dir = "../../models".into();
     let app = hre_api::router(cfg, false).await.unwrap();

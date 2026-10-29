@@ -155,6 +155,92 @@
         ]
       }
     },
+    "/v1/analyze/audio": {
+      "post": {
+        "tags": [],
+        "operationId": "analyze_audio",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/AudioUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          },
+          {
+            "moderator": []
+          }
+        ]
+      }
+    },
     "/v1/analyze/image": {
       "post": {
         "tags": [],
@@ -1262,6 +1348,22 @@
           }
         }
       },
+      "AudioUpload": {
+        "type": "object",
+        "required": [
+          "request",
+          "audio"
+        ],
+        "properties": {
+          "audio": {
+            "type": "string",
+            "format": "binary"
+          },
+          "request": {
+            "type": "string"
+          }
+        }
+      },
       "Backend": {
         "type": "string",
         "enum": [
@@ -1529,6 +1631,11 @@
             "format": "int32",
             "default": null,
             "minimum": 0
+          },
+          "simulated": {
+            "type": "boolean",
+            "description": "Marks a synthetic input; this never changes its risk score.",
+            "default": false
           },
           "stop_requested": {
             "type": "boolean",

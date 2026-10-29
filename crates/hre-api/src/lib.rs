@@ -68,6 +68,10 @@ pub async fn router(config: EngineConfig, mock: bool) -> anyhow::Result<Router> 
         .route("/v1/health/models", get(health_models))
         .route("/v1/analyze", post(analyze))
         .route(
+            "/v1/analyze/audio",
+            post(analyze_audio).layer(DefaultBodyLimit::max(hre_audio::MAX_AUDIO_SIZE + 65536)),
+        )
+        .route(
             "/v1/analyze/image",
             post(analyze_image).layer(DefaultBodyLimit::max(hre_vision::MAX_IMAGE_SIZE + 65536)),
         )
@@ -318,57 +322,13 @@ async fn analyze_image(
     State(state): State<Shared>,
     multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
 ) -> Result<Json<AnalyzeResponse>, ApiError> {
-    let mut multipart = multipart
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid multipart envelope"))?;
-    let mut envelope = None;
-    let mut image = None;
-    let mut file_mime = None;
-    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
-        match field.name() {
-            Some("request") if envelope.is_none() => {
-                let bytes = field.bytes().await.map_err(multipart_error)?;
-                if bytes.len() > 65536 {
-                    return Err(ApiError::new(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "image envelope exceeds limit",
-                    ));
-                }
-                envelope = Some(serde_json::from_slice::<AnalyzeRequest>(&bytes).map_err(
-                    |_| ApiError::new(StatusCode::BAD_REQUEST, "invalid image request JSON"),
-                )?);
-            }
-            Some("image") if image.is_none() => {
-                file_mime = field.content_type().map(str::to_owned);
-                let bytes = field.bytes().await.map_err(multipart_error)?;
-                if bytes.is_empty() || bytes.len() > hre_vision::MAX_IMAGE_SIZE {
-                    return Err(ApiError::new(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "image must contain 1..10485760 bytes",
-                    ));
-                }
-                image = Some(bytes.to_vec());
-            }
-            _ => {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "expected one request and one image field",
-                ))
-            }
-        }
-    }
-    let request =
-        envelope.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "request field required"))?;
-    request.validate()?;
-    if request.kind != EventKind::Image
-        || request.media.as_ref().map(|m| m.mime.as_str()) != file_mime.as_deref()
-    {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "image kind and matching file MIME required",
-        ));
-    }
-    let bytes =
-        image.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "image field required"))?;
+    let (request, bytes) = read_media_upload(
+        multipart,
+        EventKind::Image,
+        "image",
+        hre_vision::MAX_IMAGE_SIZE,
+    )
+    .await?;
     let (response, fresh) = if state.mock {
         (mock::analyze(&request), false)
     } else {
@@ -378,6 +338,114 @@ async fn analyze_image(
         let _ = state.alerts.send(response.clone());
     }
     Ok(Json(response))
+}
+
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)]
+struct AudioUpload {
+    request: String,
+    #[schema(value_type = String, format = Binary)]
+    audio: Vec<u8>,
+}
+
+#[utoipa::path(post, path = "/v1/analyze/audio",
+    request_body(content = AudioUpload, content_type = "multipart/form-data"),
+    responses((status = 200, body = AnalyzeResponse), (status = 400, body = Problem),
+        (status = 401, body = Problem), (status = 409, body = Problem),
+        (status = 413, body = Problem), (status = 422, body = Problem)),
+    security(("api_key" = []), ("moderator" = [])))]
+async fn analyze_audio(
+    State(state): State<Shared>,
+    multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
+) -> Result<Json<AnalyzeResponse>, ApiError> {
+    let (request, bytes) = read_media_upload(
+        multipart,
+        EventKind::Audio,
+        "audio",
+        hre_audio::MAX_AUDIO_SIZE,
+    )
+    .await?;
+    hre_audio::validate_audio(
+        &bytes,
+        request.media.as_ref().map_or("", |m| m.mime.as_str()),
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid audio or MIME mismatch",
+        )
+    })?;
+    let (response, fresh) = if state.mock {
+        (mock::analyze(&request), false)
+    } else {
+        state.engine.analyze_audio(&request, bytes).await?
+    };
+    if fresh && response.alert_id.is_some() {
+        let mut alert = response.clone();
+        alert.signals.audio.details.remove("transcript");
+        let _ = state.alerts.send(alert);
+    }
+    Ok(Json(response))
+}
+
+async fn read_media_upload(
+    multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
+    kind: EventKind,
+    file_field: &str,
+    max_size: usize,
+) -> Result<(AnalyzeRequest, Vec<u8>), ApiError> {
+    let mut multipart = multipart
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid multipart envelope"))?;
+    let mut envelope = None;
+    let mut media = None;
+    let mut file_mime = None;
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
+        match field.name() {
+            Some("request") if envelope.is_none() => {
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.len() > 65536 {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "media envelope exceeds limit",
+                    ));
+                }
+                envelope = Some(serde_json::from_slice::<AnalyzeRequest>(&bytes).map_err(
+                    |_| ApiError::new(StatusCode::BAD_REQUEST, "invalid media request JSON"),
+                )?);
+            }
+            Some(name) if name == file_field && media.is_none() => {
+                file_mime = field.content_type().map(str::to_owned);
+                let bytes = field.bytes().await.map_err(multipart_error)?;
+                if bytes.is_empty() || bytes.len() > max_size {
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "media is empty or exceeds upload limit",
+                    ));
+                }
+                media = Some(bytes.to_vec());
+            }
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "expected one request and one media field",
+                ))
+            }
+        }
+    }
+    let request =
+        envelope.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "request field required"))?;
+    request.validate()?;
+    if request.kind != kind
+        || request.media.as_ref().map(|m| m.mime.as_str()) != file_mime.as_deref()
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "matching media kind and file MIME required",
+        ));
+    }
+    let bytes =
+        media.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "media field required"))?;
+    Ok((request, bytes))
 }
 
 fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
@@ -462,13 +530,27 @@ async fn submit_recording(
         hre_audio::minimal_wav(1)
     };
     let mime = if request.mime.is_empty() {
-        "audio/mpeg"
+        "audio/mpeg".to_owned()
     } else {
-        &request.mime
+        request.mime
     };
-    match state.engine.audio.process_audio(&audio_bytes, mime) {
-        Ok(rep) => state.engine.jobs.complete_job(job_id, rep),
-        Err(e) => state.engine.jobs.fail_job(job_id, e.to_string()),
+    let backend = state.engine.audio.clone();
+    let result =
+        tokio::task::spawn_blocking(move || backend.process_audio(&audio_bytes, &mime)).await;
+    match result {
+        Ok(Ok(mut report)) => {
+            report.simulated = true;
+            report.signal.status = Status::Simulated;
+            report
+                .signal
+                .details
+                .insert("source".into(), serde_json::json!("legacy_fixture"));
+            state.engine.jobs.complete_job(job_id, report);
+        }
+        _ => state
+            .engine
+            .jobs
+            .fail_job(job_id, "recording fixture analysis failed".into()),
     }
     Ok((
         StatusCode::ACCEPTED,
@@ -764,6 +846,7 @@ impl Modify for Security {
         health_models,
         analyze,
         analyze_image,
+        analyze_audio,
         calls::import_calls,
         refusal,
         report,

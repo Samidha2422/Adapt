@@ -38,6 +38,14 @@ models-verify-test:
     @& ./scripts/just.ps1 models-verify-test
 integration-smoke:
     @& ./scripts/just.ps1 integration-smoke
+api-test:
+    @& ./scripts/just.ps1 api-test
+api-lint:
+    @& ./scripts/just.ps1 api-lint
+audio-worker-test:
+    @& ./scripts/just.ps1 audio-worker-test
+multimodal-smoke:
+    @& ./scripts/just.ps1 multimodal-smoke
 training-test:
     @& ./scripts/just.ps1 training-test
 models-verify-install:

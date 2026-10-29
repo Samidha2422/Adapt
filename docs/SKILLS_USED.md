@@ -2,6 +2,13 @@
 
 ## Live integration (2026-10-29)
 
+Latest engine/demo integration also applies `systematic-debugging` from
+`C:/Users/Vibhav/.agents/skills/systematic-debugging/SKILL.md`: inspected upstream
+commits, traced fake voice success to the upload handler, and added boundary,
+privacy and retry checks before reporting integration results. Rust guidance and
+`verification-before-completion` apply to the new audio HTTP boundary. Actual
+execution results are recorded in the integration handoff.
+
 Used the installed `ponytail` skill for focused integration, `rust-best-practices`
 for typed API/runtime boundaries and error handling, and
 `verification-before-completion` for delegated logged checks. Execution results

@@ -228,13 +228,18 @@ impl Engine {
             } else {
                 hre_vision::HeuristicImageBackend::new()
             };
+            let verified_model = |task: &str| {
+                manifest.as_ref()
+                    .ok_or(hre_ml::ModelError::Invalid("manifest unavailable"))?
+                    .validated_entry(models_path, task)
+            };
 
             let image: std::sync::Arc<dyn hre_vision::ImageBackend> =
-                match hre_ml::OnnxImageBackend::load(
-                    &models_path.join("nsfw.onnx"),
+                match verified_model("nsfw").and_then(|entry| hre_ml::OnnxImageBackend::load(
+                    &models_path.join(&entry.path),
                     nsfw_threshold,
                     heuristic_image.clone(),
-                ) {
+                )) {
                     Ok(b) => {
                         let _ = registry.mark_runtime_ready("nsfw");
                         std::sync::Arc::new(b)
@@ -247,9 +252,9 @@ impl Engine {
                     }
                 };
 
-            let onnx_deepfake = match hre_ml::OnnxDeepfakeModel::load(
-                &models_path.join("deepfake.onnx"),
-            ) {
+            let onnx_deepfake = match verified_model("deepfake").and_then(|entry| hre_ml::OnnxDeepfakeModel::load(
+                &models_path.join(&entry.path),
+            )) {
                 Ok(m) => {
                     let _ = registry.mark_runtime_ready("deepfake");
                     Some(std::sync::Arc::new(m))
@@ -263,11 +268,11 @@ impl Engine {
             };
 
             let heuristic_ocr = hre_vision::HeuristicOcrBackend::new();
-            let ocr = match hre_ml::OnnxOcrBackend::load(
-                &models_path.join("ocr_recognizer.onnx"),
+            let ocr = match verified_model("ocr").and_then(|entry| hre_ml::OnnxOcrBackend::load(
+                &models_path.join(&entry.path),
                 &models_path.join("ocr_vocab.json"),
                 heuristic_ocr.clone(),
-            ) {
+            )) {
                 Ok(b) => {
                     let _ = registry.mark_runtime_ready("ocr");
                     b
@@ -281,10 +286,10 @@ impl Engine {
             };
 
             let heuristic_audio = hre_audio::HeuristicAudioBackend::new();
-            let audio = match hre_ml::OnnxAudioBackend::load(
-                models_path,
+            let audio = match verified_model("whisper").and_then(|entry| hre_ml::OnnxAudioBackend::load(
+                models_path.join(&entry.path).parent().ok_or(hre_ml::ModelError::Invalid("Whisper asset directory unavailable"))?,
                 heuristic_audio.clone(),
-            ) {
+            )) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!(
@@ -354,7 +359,54 @@ impl Engine {
         request: &AnalyzeRequest,
         image_bytes: Option<Vec<u8>>,
     ) -> Result<(AnalyzeResponse, bool), ApiError> {
-        self.analyze_inner(request, image_bytes, None).await
+        self.analyze_inner(request, image_bytes, None, None, Instant::now())
+            .await
+    }
+    pub async fn analyze_audio(
+        &self,
+        request: &AnalyzeRequest,
+        bytes: Vec<u8>,
+    ) -> Result<(AnalyzeResponse, bool), ApiError> {
+        use sha2::Digest;
+        let started = Instant::now();
+        let backend = self.audio.clone();
+        let mime = request.media.as_ref().map_or("", |m| &m.mime).to_owned();
+        let report = tokio::task::spawn_blocking(move || {
+            let mut report = backend.process_audio(&bytes, &mime).map_err(|_| {
+                ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid audio or MIME mismatch",
+                )
+            })?;
+            report.signal.details.insert(
+                "sha256".into(),
+                serde_json::json!(format!("{:x}", sha2::Sha256::digest(&bytes))),
+            );
+            // Transcripts are returned to the uploader, never retained in assessments or alerts.
+            report.signal.details.remove("transcript_masked");
+            report.tone_signal.details.remove("transcript_masked");
+            if report.signal.backend == Backend::Disabled {
+                report.signal.status = Status::Roadmap;
+            }
+            Ok::<_, ApiError>(report)
+        })
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "audio worker unavailable",
+            )
+        })??;
+        let transcript = report.masked_transcript.clone();
+        let (mut response, fresh) = self
+            .analyze_inner(request, None, Some(report), None, started)
+            .await?;
+        response
+            .signals
+            .audio
+            .details
+            .insert("transcript".into(), serde_json::json!(transcript));
+        Ok((response, fresh))
     }
     pub async fn parse_calls(
         &self,
@@ -405,27 +457,35 @@ impl Engine {
             }),
         };
         request.validate()?;
-        self.analyze_inner(&request, None, Some(record)).await
+        self.analyze_inner(&request, None, None, Some(record), Instant::now())
+            .await
     }
     async fn analyze_inner(
         &self,
         request: &AnalyzeRequest,
         image_bytes: Option<Vec<u8>>,
+        mut audio_report: Option<hre_audio::AudioReport>,
         imported_call: Option<&hre_calls::safe_import::CallRecord>,
+        started: Instant,
     ) -> Result<(AnalyzeResponse, bool), ApiError> {
-        let started = Instant::now();
         let envelope = request.clone();
         let image = self.image.clone();
         let onnx_deepfake = self.onnx_deepfake.clone();
         let ocr = self.ocr.clone();
         let text_backend = self.text_backend.clone();
+        let transcript = audio_report.as_ref().map(|a| a.raw_transcript.clone());
         let (mut text_report, image_analysis, ocr_report) =
             tokio::task::spawn_blocking(move || {
-                let text = envelope
-                    .message
-                    .as_ref()
-                    .map(|m| m.text.as_str())
-                    .or_else(|| envelope.media.as_ref().and_then(|m| m.caption.as_deref()));
+                let text = transcript
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| {
+                        envelope
+                            .message
+                            .as_ref()
+                            .map(|m| m.text.as_str())
+                            .or_else(|| envelope.media.as_ref().and_then(|m| m.caption.as_deref()))
+                    });
                 let text_report = text
                     .filter(|s| !s.trim().is_empty())
                     .map(|s| text_backend.analyze(s))
@@ -486,6 +546,16 @@ impl Engine {
                     let mut report = ocr.process_image(&bytes, mime).map_err(|_| {
                         ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid image for OCR")
                     })?;
+                    if !report.raw_text.trim().is_empty() {
+                        let recognized = text_backend.analyze(&report.raw_text).map_err(|_| {
+                            ApiError::new(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "invalid recognized text",
+                            )
+                        })?;
+                        report.signal.score = recognized.primary_signal.score;
+                        report.text_report = Some(recognized);
+                    }
                     if report.signal.backend == Backend::Onnx {
                         // Real ONNX OCR recognition from image pixels; preserves status: Built
                     } else if !report.raw_text.is_empty() {
@@ -514,6 +584,11 @@ impl Engine {
                     "analysis worker unavailable",
                 )
             })??;
+        if let Some(audio) = &mut audio_report {
+            if let Some(report) = &text_report {
+                audio.signal.score = report.primary_signal.score;
+            }
+        }
         if let (Some(message), Some(report)) = (&request.message, &mut text_report) {
             if let Ok(matches) = self.slang_lexicon.find_matches(&message.text) {
                 if let Some(term) = matches.first() {
@@ -543,6 +618,8 @@ impl Engine {
         })?;
         let encoded_request = if let Some(image) = &image_analysis {
             serde_json::to_string(&(request, &image.sha256))
+        } else if let Some(audio) = &audio_report {
+            serde_json::to_string(&(request, audio.signal.details.get("sha256")))
         } else if let Some(call) = imported_call {
             serde_json::to_string(&(request, call.simulated))
         } else {
@@ -555,10 +632,10 @@ impl Engine {
                 return cached_response(&cached, &request_hash).map(|response| (response, false));
             }
         }
-        if matches!(request.kind, EventKind::Audio) {
+        if matches!(request.kind, EventKind::Audio) && audio_report.is_none() {
             return Err(ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
-                "audio analysis requires the audio pipeline; use --mock for client fixtures",
+                "audio bytes required; use /v1/analyze/audio",
             ));
         }
         let (sender, recipient) = if let Some(call) = imported_call {
@@ -659,11 +736,12 @@ impl Engine {
             unsolicited_explicit = analysis.signal.score >= 0.5 && !request.context.is_contact;
         }
         event.unsolicited_media = unsolicited_explicit;
-        event.simulated = image_analysis.as_ref().is_some_and(|i| i.simulated)
+        event.simulated = request.context.simulated
+            || image_analysis.as_ref().is_some_and(|i| i.simulated)
             || ocr_report.as_ref().is_some_and(|o| o.simulated)
             || reported_hash_match
+            || audio_report.as_ref().is_some_and(|a| a.simulated)
             || imported_call.is_some_and(|c| c.simulated);
-        let audio_report: Option<hre_audio::AudioReport> = None;
         events.retain(|e| e.event_id != event.event_id);
         events.push(event.clone());
         let behavior_config = self.behavior.clone();
@@ -936,7 +1014,9 @@ impl Engine {
                         report.primary_signal.status
                     };
                 }
-                if report.pii_signal.score > signals.pii.score {
+                if report.pii_signal.score > signals.pii.score
+                    || (ocr.simulated && report.pii_signal.score == signals.pii.score)
+                {
                     signals.pii = report.pii_signal.clone();
                     signals.pii.status = if ocr.simulated {
                         Status::Simulated

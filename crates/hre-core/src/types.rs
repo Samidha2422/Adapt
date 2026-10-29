@@ -85,6 +85,8 @@ pub struct Channel {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventContext {
+    /// Marks a synthetic input; this never changes its risk score.
+    pub simulated: bool,
     pub is_contact: bool,
     pub recipient_blocked_sender: bool,
     pub recipient_muted_sender: bool,

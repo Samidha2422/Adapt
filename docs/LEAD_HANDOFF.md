@@ -40,7 +40,7 @@ API integration handoff: wired REQ16/17 indexed refusal markers, atomic assessme
 All 4 genuine multimodal capabilities and core text/behavior models are integrated into the live Rust engine:
 
 ### 1. Active Models in Engine
-- **NSFW Image Classification**: `models/nsfw.onnx` (Falconsai ViT, 2 classes: `normal`, `nsfw`). Preprocessing: resize/crop to $224 \times 224 \times 3$, ImageNet normalization. Backend: `OnnxImageBackend`.
+- **NSFW Image Classification**: `models/nsfw.onnx` (Falconsai ViT, 2 classes: `normal`, `nsfw`). Current runtime preprocessing: resize RGB to $224 \times 224$, normalize each channel with mean/std 0.5. Backend: `OnnxImageBackend`. Confirm parity with the transferred model's processor.
 - **Deepfake Image Detection**: `models/deepfake.onnx` (dima806 ViT, 2 classes: `authentic`, `deepfake`). Preprocessing: $224 \times 224 \times 3$ float32 RGB. Attached via `OnnxDeepfakeModel`.
 - **OCR Text Detection & Recognition**: Full 2-stage pipeline using `models/ocr_detector.onnx` (DBNet text detector) and `models/ocr_recognizer.onnx` (PP-OCRv4 recognizer) + `models/ocr_vocab.json`. Detects text bounding boxes across multi-line screenshots/documents, crops text regions, and decodes text using CTC greedy decoding. Backend: `OnnxOcrBackend`.
 - **Audio Transcription**: `models/whisper_encoder.onnx` + `models/whisper_decoder.onnx` + `models/whisper_tokenizer.json` (OpenAI Whisper-tiny ONNX pipeline). Backend: `OnnxWhisperModel` / `OnnxAudioBackend`.
@@ -72,7 +72,7 @@ All 4 genuine multimodal capabilities and core text/behavior models are integrat
     "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "severity": 86,
     "tier": "urgent",
-    "action": "blur_media",
+    "recommended_action": "blur_media",
     "secondary_actions": ["alert_moderator"],
     "signals": {
       "text": { "score": 0.85, "label": "toxic_harassment", "status": "built", "backend": "onnx" },
@@ -97,11 +97,16 @@ All 4 genuine multimodal capabilities and core text/behavior models are integrat
   3. **Composite Intimate Media Rule**: If deepfake score $\ge 0.70$ AND NSFW score $\ge 0.50$, the engine automatically sets `synthetic_intimate: true`, emits reason code `POSSIBLE_SYNTHETIC_INTIMATE_MEDIA`, elevates the risk tier floor to `urgent` (score 86), and sets recommended action to `Action::BlurMedia`.
   4. Runs PP-OCRv4 line recognizer. Any abusive text extracted from image pixels triggers `OCR_ABUSE` reason code and feeds the text classifier.
 
-#### C. Audio Analysis Pipeline: `POST /v1/recordings/analyze`
-- **Headers**: `Content-Type: application/json`, `X-API-Key: <key>`
-- **Body**: `{ "mime": "audio/wav", "caption": "optional context" }`
-- **Response**: HTTP 202 Accepted with `{ "job_id": "<uuid>", "status": "accepted" }`.
-- **Poll Status**: `GET /v1/jobs/{job_id}` returns transcription, tone signal, speech emotion, and risk reasons.
+#### C. Uploaded audio: `POST /v1/analyze/audio`
+- **Headers**: `Content-Type: multipart/form-data`, `X-API-Key: <key>`.
+- **Parts**: `request` is an AnalyzeRequest with `kind: "audio"`, sender/recipient,
+  channel/context, and `media: { "mime": "audio/wav" }`; `audio` contains the bytes.
+- **Response**: HTTP 200 AnalyzeResponse; the upload response includes the masked
+  transcript in `signals.audio.details.transcript`. Stored alerts and SSE omit it.
+- Prefer short PCM WAV clips for the current Whisper decoder. Maximum file size is
+  25 MiB. Missing inference remains unavailable/degraded; tone is not a trained model.
+- The older JSON `/v1/recordings/analyze` creates fixture audio from its caption.
+  Its 202 job result does not demonstrate that a user recording was transcribed.
 
 #### D. Live Moderator Alerts & Dashboard
 - **SSE Stream**: `GET /v1/stream/alerts` (Server-Sent Events) pushes `AnalyzeResponse` in real time whenever an event with `severity >= 31` produces an `alert_id`.

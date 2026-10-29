@@ -1804,64 +1804,111 @@ impl std::fmt::Debug for OnnxWhisperModel {
 
 impl OnnxWhisperModel {
     pub fn load(models_dir: &Path) -> Result<Self, ModelError> {
-        if !models_dir.join("whisper_encoder.onnx").exists()
-            || !models_dir.join("whisper_decoder.onnx").exists()
-        {
-            return Err(ModelError::Inference("missing whisper onnx models".into()));
+        let models_dir = models_dir
+            .canonicalize()
+            .map_err(|_| ModelError::Invalid("missing Whisper model directory"))?;
+        for name in [
+            "whisper_encoder.onnx",
+            "whisper_decoder.onnx",
+            "whisper_tokenizer.json",
+            "whisper_preprocessor_config.json",
+        ] {
+            if !models_dir.join(name).is_file() {
+                return Err(ModelError::Invalid("missing local Whisper asset"));
+            }
         }
-        Ok(Self {
-            models_dir: models_dir.to_path_buf(),
-        })
+        Ok(Self { models_dir })
     }
 
-    /// Transcribes audio bytes using the verified Whisper pipeline.
+    /// Transcribes PCM WAV bytes using the local Whisper worker.
     pub fn transcribe(&self, bytes: &[u8]) -> Result<AudioTranscription, AudioError> {
         if bytes.is_empty() {
             return Err(AudioError::EmptyInput);
         }
-        let temp_dir = std::env::temp_dir();
-        let file_id = uuid::Uuid::new_v4();
-        let wav_path = temp_dir.join(format!("hre_whisper_{file_id}.wav"));
-        std::fs::write(&wav_path, bytes).map_err(|e| AudioError::Transcription(e.to_string()))?;
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
 
-        let mut root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        while !root.join("Cargo.lock").exists() {
-            if let Some(parent) = root.parent() {
-                root = parent.to_path_buf();
-            } else {
-                break;
+        let meta = hre_audio::validate_audio(bytes, "")?;
+        if meta.mime != "audio/wav" {
+            return Err(AudioError::UnsupportedFormat);
+        }
+        let current_dir = std::env::current_dir()
+            .map_err(|_| AudioError::Transcription("worker directory unavailable".into()))?;
+        let root = current_dir
+            .ancestors()
+            .chain(self.models_dir.ancestors())
+            .find(|dir| dir.join("scripts/test_audio_transcription.py").is_file())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let root = root
+            .canonicalize()
+            .map_err(|_| AudioError::Transcription("worker directory unavailable".into()))?;
+        let py_cmd = [
+            root.join(".venv/Scripts/python.exe"),
+            root.join(".venv/bin/python"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("python"));
+
+        struct TempWav(PathBuf);
+        impl Drop for TempWav {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
             }
         }
-        let venv_py = root.join(".venv/Scripts/python.exe");
-        let py_cmd = if venv_py.exists() {
-            venv_py.to_string_lossy().to_string()
-        } else {
-            "python".to_string()
-        };
+        let wav_path = std::env::temp_dir().join(format!(
+            "hre_whisper_{}_{}.wav",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&wav_path)
+            .map_err(|_| AudioError::Transcription("worker input creation failed".into()))?;
+        let wav = TempWav(wav_path);
+        let written = file.write_all(bytes);
+        drop(file);
+        written.map_err(|_| AudioError::Transcription("worker input write failed".into()))?;
 
-        let output = std::process::Command::new(py_cmd)
+        let mut child = Command::new(py_cmd)
             .current_dir(&root)
-            .arg("-c")
-            .arg(format!(
-                "import sys, json; sys.path.insert(0, r'{}'); from scripts.test_audio_transcription import SafeAudioDecoder, WhisperTranscriber; \
-                 samples, rate = SafeAudioDecoder.decode_wav_bytes(open(r'{}', 'rb').read()); \
-                 samples_16k = SafeAudioDecoder.resample_to_16k(samples, rate); \
-                 res = WhisperTranscriber().transcribe(samples_16k); \
-                 print(json.dumps(res))",
-                root.display(),
-                wav_path.display()
-            ))
-            .output();
-
-        let _ = std::fs::remove_file(&wav_path);
-
-        let out = output
-            .map_err(|e| AudioError::Transcription(format!("worker invocation error: {e}")))?;
+            .arg(root.join("scripts/test_audio_transcription.py"))
+            .arg("--worker")
+            .arg(&self.models_dir)
+            .arg(&wav.0)
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| AudioError::Transcription("worker invocation failed".into()))?;
+        let started = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if started.elapsed() < Duration::from_secs(120) => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                result => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(AudioError::Transcription(if result.is_err() {
+                        "worker wait failed".into()
+                    } else {
+                        "worker timed out".into()
+                    }));
+                }
+            }
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|_| AudioError::Transcription("worker output unavailable".into()))?;
         if !out.status.success() {
-            let err_msg = String::from_utf8_lossy(&out.stderr);
-            return Err(AudioError::Transcription(format!(
-                "transcription worker failed: {err_msg}"
-            )));
+            return Err(AudioError::Transcription("Whisper inference failed".into()));
         }
 
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1870,22 +1917,22 @@ impl OnnxWhisperModel {
             transcript: String,
             #[serde(default = "default_lang")]
             language: String,
-            #[serde(default)]
-            is_silence: bool,
+            duration_s: f64,
         }
         fn default_lang() -> String {
             "en".into()
         }
 
         let res: WorkerResult = serde_json::from_str(stdout.trim())
-            .map_err(|e| AudioError::Transcription(format!("failed to parse worker JSON: {e}")))?;
-
-        let duration_s = (bytes.len() as f64 / 32000.0).clamp(0.5, 30.0);
+            .map_err(|_| AudioError::Transcription("invalid worker response".into()))?;
+        if !res.duration_s.is_finite() || !(0.0..=300.0).contains(&res.duration_s) {
+            return Err(AudioError::Transcription("invalid worker duration".into()));
+        }
         Ok(AudioTranscription {
             transcript: res.transcript,
             language: res.language,
-            duration_s,
-            tone_score: if res.is_silence { 0.0 } else { 0.2 },
+            duration_s: res.duration_s,
+            tone_score: 0.0,
             simulated: false,
         })
     }
@@ -1922,79 +1969,116 @@ impl OnnxAudioBackend {
     ) -> Result<AudioReport, AudioError> {
         let _meta = hre_audio::validate_audio(bytes, declared_mime)?;
 
-        // Try genuine Whisper transcription first
+        let mut failure = "whisper.onnx_missing";
         if let Some(model) = &self.model {
+            failure = "whisper.inference_failed";
             if let Ok(transcription) = model.transcribe(bytes) {
-                let raw_transcript = transcription.transcript.clone();
-                if !raw_transcript.trim().is_empty() {
-                    let text_report = hre_text::analyze(&raw_transcript).ok();
-                    let masked_transcript = text_report
-                        .as_ref()
-                        .map(|r| r.masked_text.clone())
-                        .unwrap_or_else(|| raw_transcript.clone());
+                let raw_transcript = transcription.transcript;
+                let text_report = if raw_transcript.trim().is_empty() {
+                    None
+                } else {
+                    hre_text::analyze(&raw_transcript).ok()
+                };
+                let masked_transcript = text_report
+                    .as_ref()
+                    .map(|r| r.masked_text.clone())
+                    .unwrap_or_else(|| hre_text::mask_pii(&raw_transcript).0);
 
-                    let score = text_report
-                        .as_ref()
-                        .map(|r| r.primary_signal.score)
-                        .unwrap_or(0.0);
+                let score = text_report
+                    .as_ref()
+                    .map(|r| r.primary_signal.score)
+                    .unwrap_or(0.0);
 
-                    let mut details = BTreeMap::new();
-                    details.insert(
-                        "transcript_masked".into(),
-                        serde_json::json!(masked_transcript.clone()),
-                    );
-                    details.insert("model_id".into(), serde_json::json!("openai/whisper-tiny"));
-
-                    let signal = Signal {
-                        score,
-                        label: if score >= 0.31 {
-                            "audio_harassment".into()
-                        } else {
-                            "audio_benign".into()
-                        },
-                        status: Status::Built,
-                        backend: Backend::Onnx,
-                        confidence: 0.95,
-                        details: details.clone(),
-                    };
-
-                    let tone_signal = Signal {
-                        score: transcription.tone_score,
-                        label: "neutral".into(),
-                        status: Status::Built,
-                        backend: Backend::Onnx,
-                        confidence: 0.90,
-                        details,
-                    };
-
-                    return Ok(AudioReport {
-                        raw_transcript,
-                        masked_transcript,
-                        language: transcription.language,
-                        duration_s: transcription.duration_s,
-                        text_report,
-                        signal,
-                        tone_signal,
-                        reasons: Vec::new(),
-                        recommended_action: if score >= 0.5 {
-                            hre_core::Action::WarnSender
-                        } else {
-                            hre_core::Action::Log
-                        },
-                        secondary_actions: if score >= 0.31 {
-                            vec![hre_core::SecondaryAction::ShowTranscript]
-                        } else {
-                            Vec::new()
-                        },
-                        simulated: false,
-                        degraded: Vec::new(),
-                    });
+                let mut details = BTreeMap::new();
+                details.insert(
+                    "transcript_masked".into(),
+                    serde_json::json!(masked_transcript.clone()),
+                );
+                details.insert("model_id".into(), serde_json::json!("openai/whisper-tiny"));
+                details.insert(
+                    "duration_s".into(),
+                    serde_json::json!(transcription.duration_s),
+                );
+                details.insert(
+                    "processed_duration_s".into(),
+                    serde_json::json!(transcription.duration_s.min(30.0)),
+                );
+                let truncated = transcription.duration_s > 30.0;
+                details.insert("truncated".into(), serde_json::json!(truncated));
+                let mut degraded = vec!["tone.disabled".into()];
+                if truncated {
+                    degraded.push("audio.first_window_only".into());
                 }
+
+                let signal = Signal {
+                    score,
+                    label: if score >= 0.31 {
+                        "audio_harassment".into()
+                    } else {
+                        "audio_benign".into()
+                    },
+                    status: Status::Built,
+                    backend: Backend::Onnx,
+                    confidence: 0.95,
+                    details,
+                };
+
+                let tone_signal = Signal {
+                    score: 0.0,
+                    label: "tone_unavailable".into(),
+                    status: Status::Roadmap,
+                    backend: Backend::Disabled,
+                    confidence: 0.0,
+                    details: BTreeMap::new(),
+                };
+
+                return Ok(AudioReport {
+                    raw_transcript,
+                    masked_transcript,
+                    language: transcription.language,
+                    duration_s: transcription.duration_s,
+                    text_report,
+                    signal,
+                    tone_signal,
+                    reasons: Vec::new(),
+                    recommended_action: if score >= 0.5 {
+                        hre_core::Action::WarnSender
+                    } else {
+                        hre_core::Action::Log
+                    },
+                    secondary_actions: if score >= 0.31 {
+                        vec![hre_core::SecondaryAction::ShowTranscript]
+                    } else {
+                        Vec::new()
+                    },
+                    simulated: false,
+                    degraded,
+                });
             }
         }
 
-        // Fall back to heuristic backend
-        self.fallback.process_audio(bytes, declared_mime)
+        let mut report = self.fallback.process_audio(bytes, declared_mime)?;
+        report
+            .degraded
+            .retain(|code| !matches!(code.as_str(), "audio.onnx_missing" | "whisper.ggml_missing"));
+        report.degraded.push(failure.into());
+        report.degraded.push("tone.disabled".into());
+        report
+            .reasons
+            .retain(|reason| reason.code != "AGGRESSIVE_TONE");
+        report.tone_signal = Signal {
+            score: 0.0,
+            label: "tone_unavailable".into(),
+            status: Status::Roadmap,
+            backend: Backend::Disabled,
+            confidence: 0.0,
+            details: BTreeMap::new(),
+        };
+        if !report.simulated {
+            report.signal.status = Status::Roadmap;
+            report.signal.backend = Backend::Disabled;
+        }
+        Ok(report)
     }
 }
 
@@ -2004,12 +2088,15 @@ impl AudioBackend for OnnxAudioBackend {
         bytes: &[u8],
         declared_mime: &str,
     ) -> Result<AudioTranscription, AudioError> {
+        hre_audio::validate_audio(bytes, declared_mime)?;
         if let Some(model) = &self.model {
             if let Ok(t) = model.transcribe(bytes) {
                 return Ok(t);
             }
         }
-        self.fallback.transcribe(bytes, declared_mime)
+        let mut transcription = self.fallback.transcribe(bytes, declared_mime)?;
+        transcription.tone_score = 0.0;
+        Ok(transcription)
     }
 }
 
@@ -2075,11 +2162,7 @@ mod tests {
             PathBuf::from("../../models"),
             PathBuf::from("../../../models"),
         ];
-        candidates.into_iter().find(|c| {
-            c.join("behavior_msg.onnx").exists()
-                && c.join("text_fine_tuned.onnx").exists()
-                && c.join("nsfw.onnx").exists()
-        })
+        candidates.into_iter().find(|c| c.is_dir())
     }
 
     const PYTHON_SYNTHETIC_NORMAL: f32 = 0.99960452;
@@ -2123,19 +2206,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained NSFW model, matching parity fixture and ONNX Runtime"]
     fn test_python_rust_parity_nsfw_synthetic_image() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("nsfw.onnx");
-        if !model_path.exists() {
-            return;
-        }
+        assert!(model_path.is_file(), "required trained model is missing");
         let test_img_path = models_dir.join("synthetic_test.png");
-        if !test_img_path.exists() {
-            return;
-        }
+        assert!(test_img_path.is_file(), "required parity image is missing");
         let img_bytes = std::fs::read(&test_img_path).expect("read test image");
         let tensor = preprocess_image(&img_bytes, "image/png").expect("preprocess synthetic test");
         let model = OnnxNsfwModel::load(&model_path).expect("load nsfw model");
@@ -2161,15 +2238,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained NSFW model and ONNX Runtime"]
     fn test_onnx_image_backend_normal_and_action() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("nsfw.onnx");
-        if !model_path.exists() {
-            return;
-        }
+        assert!(model_path.is_file(), "required trained model is missing");
         let fallback = HeuristicImageBackend::new();
         let backend =
             OnnxImageBackend::load(&model_path, 0.50, fallback).expect("load onnx image backend");
@@ -2187,15 +2260,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained NSFW model and ONNX Runtime"]
     fn test_onnx_image_backend_demo_override_is_simulated() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("nsfw.onnx");
-        if !model_path.exists() {
-            return;
-        }
+        assert!(model_path.is_file(), "required trained model is missing");
         let png = valid_test_png();
         let mut hasher = sha2::Sha256::new();
         sha2::Digest::update(&mut hasher, &png);
@@ -2239,10 +2308,7 @@ mod tests {
     #[test]
     #[ignore = "requires transferred model and compatible ONNX Runtime; run via delegated logged recipe"]
     fn test_python_rust_parity_golden_message_vector() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("behavior_msg.onnx");
         let model = OnnxBehaviorModel::load(&model_path, 47).expect("load message model");
         let prob = model
@@ -2258,10 +2324,7 @@ mod tests {
     #[test]
     #[ignore = "requires transferred model and compatible ONNX Runtime; run via delegated logged recipe"]
     fn test_python_rust_parity_zero_message_vector() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("behavior_msg.onnx");
         let model = OnnxBehaviorModel::load(&model_path, 47).expect("load message model");
         let zeros = [0.0f32; 47];
@@ -2276,10 +2339,7 @@ mod tests {
     #[test]
     #[ignore = "golden probabilities require revalidation for the manually replaced checkpoint"]
     fn test_python_rust_parity_text_model_benign() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("text_fine_tuned.onnx");
         let tokenizer_path = models_dir.join("tokenizer.json");
         let model = OnnxTextModel::load(&model_path, &tokenizer_path).expect("load text model");
@@ -2303,10 +2363,7 @@ mod tests {
     #[test]
     #[ignore = "golden probabilities require revalidation for the manually replaced checkpoint"]
     fn test_python_rust_parity_text_model_threat() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("text_fine_tuned.onnx");
         let tokenizer_path = models_dir.join("tokenizer.json");
         let model = OnnxTextModel::load(&model_path, &tokenizer_path).expect("load text model");
@@ -2330,10 +2387,7 @@ mod tests {
     #[test]
     #[ignore = "requires 1 GB transferred model and compatible ONNX Runtime; run via delegated logged recipe"]
     fn test_onnx_text_backend_threat_report() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let mut thresholds = BTreeMap::new();
         thresholds.insert("decision".into(), 0.325);
         thresholds.insert("threat".into(), 0.45);
@@ -2375,19 +2429,13 @@ mod tests {
     const PYTHON_SYNTHETIC_DEEPFAKE_MANIP: f32 = 0.188723;
 
     #[test]
+    #[ignore = "requires genuine trained deepfake model, matching parity fixture and ONNX Runtime"]
     fn test_python_rust_parity_deepfake_synthetic_image() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("deepfake.onnx");
-        if !model_path.exists() {
-            return;
-        }
+        assert!(model_path.is_file(), "required trained model is missing");
         let test_img_path = models_dir.join("synthetic_test.png");
-        if !test_img_path.exists() {
-            return;
-        }
+        assert!(test_img_path.is_file(), "required parity image is missing");
         let img_bytes = std::fs::read(&test_img_path).expect("read test image");
         let model = OnnxDeepfakeModel::load(&model_path).expect("load deepfake model");
         let probs = model
@@ -2414,16 +2462,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained OCR recognizer, vocabulary and ONNX Runtime"]
     fn test_onnx_ocr_backend_pixel_recognition() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let model_path = models_dir.join("ocr_recognizer.onnx");
         let vocab_path = models_dir.join("ocr_vocab.json");
-        if !model_path.exists() || !vocab_path.exists() {
-            return;
-        }
+        assert!(model_path.is_file(), "required OCR recognizer is missing");
+        assert!(vocab_path.is_file(), "required OCR vocabulary is missing");
         let fallback = HeuristicOcrBackend::new();
         let backend = OnnxOcrBackend::load(&model_path, &vocab_path, fallback)
             .expect("load onnx ocr backend");
@@ -2436,25 +2481,101 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained Whisper encoder/decoder, local tokenizer/preprocessor and Python ONNX Runtime"]
     fn test_onnx_whisper_silence_transcription() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
-        if !models_dir.join("whisper_encoder.onnx").exists() {
-            return;
+        let models_dir = find_models_dir().expect("required models directory is missing");
+        for name in [
+            "whisper_encoder.onnx",
+            "whisper_decoder.onnx",
+            "whisper_tokenizer.json",
+            "whisper_preprocessor_config.json",
+        ] {
+            assert!(
+                models_dir.join(name).is_file(),
+                "required Whisper asset missing: {name}"
+            );
         }
         let fallback = HeuristicAudioBackend::new();
-        let backend = match OnnxAudioBackend::load(&models_dir, fallback) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let wav = hre_audio::fixtures::minimal_wav(1);
+        let backend =
+            OnnxAudioBackend::load(&models_dir, fallback).expect("load genuine Whisper backend");
+        for duration_s in [1, 31] {
+            let wav = hre_audio::fixtures::minimal_wav(duration_s);
+            let report = backend
+                .process_audio(&wav, "audio/wav")
+                .expect("process audio silence");
+            assert_eq!(report.raw_transcript, "");
+            assert_eq!(report.signal.score, 0.0);
+            assert_eq!(report.signal.status, Status::Built);
+            assert_eq!(report.signal.backend, Backend::Onnx);
+            assert_eq!(report.tone_signal.status, Status::Roadmap);
+            assert_eq!(report.tone_signal.backend, Backend::Disabled);
+            assert_eq!(
+                report.signal.details["duration_s"],
+                serde_json::json!(f64::from(duration_s))
+            );
+            assert_eq!(
+                report.signal.details["processed_duration_s"],
+                serde_json::json!(f64::from(duration_s.min(30)))
+            );
+            assert_eq!(
+                report.signal.details["truncated"],
+                serde_json::json!(duration_s > 30)
+            );
+            assert_eq!(
+                report
+                    .degraded
+                    .iter()
+                    .any(|code| code == "audio.first_window_only"),
+                duration_s > 30,
+            );
+            assert!(!report
+                .degraded
+                .iter()
+                .any(|code| code.starts_with("whisper.")));
+        }
+    }
+
+    #[test]
+    fn missing_whisper_reports_disabled_and_missing_reason() {
+        let backend = OnnxAudioBackend::fallback_only(HeuristicAudioBackend::new());
         let report = backend
-            .process_audio(&wav, "audio/wav")
-            .expect("process audio silence");
-        assert_eq!(report.raw_transcript, "");
-        assert_eq!(report.signal.score, 0.0);
+            .process_audio(&hre_audio::fixtures::minimal_wav(1), "audio/wav")
+            .unwrap();
+        assert!(report
+            .degraded
+            .iter()
+            .any(|code| code == "whisper.onnx_missing"));
+        assert_eq!(report.signal.status, Status::Roadmap);
+        assert_eq!(report.signal.backend, Backend::Disabled);
+        assert_eq!(report.tone_signal.status, Status::Roadmap);
+    }
+
+    #[test]
+    fn unsupported_whisper_format_reports_failure_and_disables_fixture_tone() {
+        let backend = OnnxAudioBackend::new(
+            Some(Arc::new(OnnxWhisperModel {
+                models_dir: PathBuf::new(),
+            })),
+            HeuristicAudioBackend::new(),
+        );
+        let report = backend
+            .process_audio(
+                &hre_audio::fixtures::minimal_mp3_with_comment("hello"),
+                "audio/mpeg",
+            )
+            .unwrap();
+        assert!(report
+            .degraded
+            .iter()
+            .any(|code| code == "whisper.inference_failed"));
+        assert!(!report
+            .degraded
+            .iter()
+            .any(|code| code == "whisper.onnx_missing"));
+        assert!(report.simulated);
+        assert_eq!(report.tone_signal.score, 0.0);
+        assert_eq!(report.tone_signal.status, Status::Roadmap);
+        assert_eq!(report.tone_signal.backend, Backend::Disabled);
     }
 
     #[test]
@@ -2472,19 +2593,16 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained OCR detector, multiline fixture and ONNX Runtime"]
     fn test_onnx_ocr_detector_multiline_boxes() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let det_path = models_dir.join("ocr_detector.onnx");
-        if !det_path.exists() {
-            return;
-        }
+        assert!(det_path.is_file(), "required OCR detector is missing");
         let fixture_path = models_dir.join("_test_fixtures").join("ocr_multiline.png");
-        if !fixture_path.exists() {
-            return;
-        }
+        assert!(
+            fixture_path.is_file(),
+            "required OCR image fixture is missing"
+        );
         let detector = OnnxOcrDetector::load(&det_path).expect("load ocr detector");
         let img = image::open(&fixture_path).expect("open multiline image");
         let boxes = detector.detect(&img).expect("detect multiline text boxes");
@@ -2509,25 +2627,24 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained OCR detector/recognizer, vocabulary, multiline fixture and ONNX Runtime"]
     fn test_onnx_ocr_backend_multiline_end_to_end() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let rec_path = models_dir.join("ocr_recognizer.onnx");
         let vocab_path = models_dir.join("ocr_vocab.json");
         let det_path = models_dir.join("ocr_detector.onnx");
-        if !rec_path.exists() || !vocab_path.exists() || !det_path.exists() {
-            return;
-        }
+        assert!(rec_path.is_file(), "required OCR recognizer is missing");
+        assert!(vocab_path.is_file(), "required OCR vocabulary is missing");
+        assert!(det_path.is_file(), "required OCR detector is missing");
         let fallback = HeuristicOcrBackend::new();
         let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
             .expect("load onnx ocr pipeline");
 
         let fixture_path = models_dir.join("_test_fixtures").join("ocr_multiline.png");
-        if !fixture_path.exists() {
-            return;
-        }
+        assert!(
+            fixture_path.is_file(),
+            "required OCR image fixture is missing"
+        );
         let bytes = std::fs::read(&fixture_path).expect("read fixture");
         let report = backend
             .process_image(&bytes, "image/png")
@@ -2550,17 +2667,15 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained OCR detector/recognizer, vocabulary, single-line fixture and ONNX Runtime"]
     fn test_onnx_ocr_backend_single_line_compatibility() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let rec_path = models_dir.join("ocr_recognizer.onnx");
         let vocab_path = models_dir.join("ocr_vocab.json");
         let det_path = models_dir.join("ocr_detector.onnx");
-        if !rec_path.exists() || !vocab_path.exists() {
-            return;
-        }
+        assert!(rec_path.is_file(), "required OCR recognizer is missing");
+        assert!(vocab_path.is_file(), "required OCR vocabulary is missing");
+        assert!(det_path.is_file(), "required OCR detector is missing");
         let fallback = HeuristicOcrBackend::new();
         let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
             .expect("load onnx ocr pipeline");
@@ -2568,9 +2683,10 @@ mod tests {
         let fixture_path = models_dir
             .join("_test_fixtures")
             .join("ocr_single_line.png");
-        if !fixture_path.exists() {
-            return;
-        }
+        assert!(
+            fixture_path.is_file(),
+            "required OCR image fixture is missing"
+        );
         let bytes = std::fs::read(&fixture_path).expect("read single-line fixture");
         let report = backend
             .process_image(&bytes, "image/png")
@@ -2587,25 +2703,24 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires genuine trained OCR detector/recognizer, vocabulary, no-text fixture and ONNX Runtime"]
     fn test_onnx_ocr_backend_no_text_image() {
-        let models_dir = match find_models_dir() {
-            Some(d) => d,
-            None => return,
-        };
+        let models_dir = find_models_dir().expect("required models directory is missing");
         let rec_path = models_dir.join("ocr_recognizer.onnx");
         let vocab_path = models_dir.join("ocr_vocab.json");
         let det_path = models_dir.join("ocr_detector.onnx");
-        if !rec_path.exists() || !vocab_path.exists() || !det_path.exists() {
-            return;
-        }
+        assert!(rec_path.is_file(), "required OCR recognizer is missing");
+        assert!(vocab_path.is_file(), "required OCR vocabulary is missing");
+        assert!(det_path.is_file(), "required OCR detector is missing");
         let fallback = HeuristicOcrBackend::new();
         let backend = OnnxOcrBackend::load_pipeline(&det_path, &rec_path, &vocab_path, fallback)
             .expect("load onnx ocr pipeline");
 
         let fixture_path = models_dir.join("_test_fixtures").join("ocr_no_text.png");
-        if !fixture_path.exists() {
-            return;
-        }
+        assert!(
+            fixture_path.is_file(),
+            "required OCR image fixture is missing"
+        );
         let bytes = std::fs::read(&fixture_path).expect("read no-text fixture");
         let report = backend
             .process_image(&bytes, "image/png")

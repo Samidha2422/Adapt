@@ -1,5 +1,15 @@
 # Model contract (proposed)
 
+Runtime compatibility note (2026-10-29): the original exports below are historical
+coordination proposals. The merged ViT image backend consumes 224x224 RGB with
+mean/std 0.5 and `[normal, nsfw]` order, rather than the proposed 384px NSFW wrapper.
+Whisper now has separate encoder/decoder ONNX graphs and local tokenizer/processor
+assets rather than a GGML runtime. Use [DEMO_MODEL_INTEGRATION.md](DEMO_MODEL_INTEGRATION.md)
+and actual runtime source for the transferred model bundle. The trainer must supply
+matching manifest hashes and processor/label parity; these notes do not validate
+artifacts that have not been transferred. The verifier's graph-output checks alone
+do not establish input or preprocessing compatibility.
+
 This is the coordination contract for Pascal's verifier and model exporters, before backend implementation. It specifies **proposed wrapper exports**, not verified native model signatures, labels, preprocessing, licenses, availability, or measured thresholds. No named upstream model is asserted to satisfy it. An exporter must inspect its actual artifact and tokenizer/processor, implement the adapter, check license and label mapping, and demonstrate parity before enabling it. If a native model cannot implement the contract, revise and version the contract with the verifier and consumers before export. The existing `hre-ml` parser currently accepts only `name`, `path`, `sha256`, `version`, `features`, and `baseline`, denies unknown fields, verifies hashes, and selects heuristic inference. It does **not** accept these examples or perform ONNX inference; migration is required. A verified hash alone never means inference is active.
 
 ## Manifest and verifier agreement
