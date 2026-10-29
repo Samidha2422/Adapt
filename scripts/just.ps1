@@ -63,8 +63,8 @@ try {
             'eval' { & cargo run -p hre-eval -- @RecipeArgs; break }
             'bench' { & cargo bench --workspace; break }
             'models-verify' { & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/models-verify.ps1; break }
-            'models-verify-install' { & python -m pip install --only-binary=:all: --target target/model-verify-deps-clean onnx==1.20.1; break }
-            'models-verify-test' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps-clean'); & python -m unittest discover -s scripts/tests -p 'test_verify_models.py'; break }
+            'models-verify-install' { & python -m pip install --only-binary=:all: --target target/model-verify-deps-v2 onnx==1.20.1; break }
+            'models-verify-test' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps-v2'); & python -m unittest discover -s scripts/tests -p 'test_verify_models.py'; break }
             'training-test' { $env:PYTHONPATH = (Join-Path $root 'training/src'); & python -m unittest discover -s training/tests; break }
             default {
                 if ($Recipe -like 'train-*') {

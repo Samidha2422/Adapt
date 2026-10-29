@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$depsClean = Join-Path (Split-Path -Parent $PSScriptRoot) 'target/model-verify-deps-clean'
+$depsClean = Join-Path (Split-Path -Parent $PSScriptRoot) 'target/model-verify-deps-v2'
 $deps = Join-Path (Split-Path -Parent $PSScriptRoot) 'target/model-verify-deps'
 $env:PYTHONPATH = if (Test-Path $depsClean) { $depsClean } else { $deps }
 $python = Get-Command python -ErrorAction Stop
