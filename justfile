@@ -44,8 +44,20 @@ api-lint:
     @& ./scripts/just.ps1 api-lint
 audio-worker-test:
     @& ./scripts/just.ps1 audio-worker-test
+models-admit-known:
+    @& ./scripts/just.ps1 models-admit-known
+inspect-whisper:
+    @& ./scripts/just.ps1 inspect-whisper
+whisper-smoke:
+    @& ./scripts/just.ps1 whisper-smoke
+whisper-deps-install:
+    @& ./scripts/just.ps1 whisper-deps-install
+python-version:
+    @& ./scripts/just.ps1 python-version
 multimodal-smoke:
     @& ./scripts/just.ps1 multimodal-smoke
+whisper-api-smoke:
+    @& ./scripts/just.ps1 whisper-api-smoke
 training-test:
     @& ./scripts/just.ps1 training-test
 models-verify-install:

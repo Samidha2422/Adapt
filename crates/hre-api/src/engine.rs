@@ -290,7 +290,13 @@ impl Engine {
                 models_path.join(&entry.path).parent().ok_or(hre_ml::ModelError::Invalid("Whisper asset directory unavailable"))?,
                 heuristic_audio.clone(),
             )) {
-                Ok(b) => b,
+                Ok(b) => match registry.mark_runtime_ready("whisper") {
+                    Ok(()) => b,
+                    Err(error) => {
+                        tracing::warn!(%error, "Whisper registry admission failed; using fallback");
+                        hre_ml::OnnxAudioBackend::fallback_only(heuristic_audio)
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(
                         "Failed to load ONNX Whisper audio model ({e}); using heuristic audio fallback"

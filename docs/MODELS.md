@@ -1,5 +1,16 @@
 # Model candidates and verification
 
+## Transferred model source references (2026-10-29)
+
+The trainer identifies the transferred NSFW and deepfake artifacts as exports of
+[Falconsai/nsfw_image_detection](https://huggingface.co/Falconsai/nsfw_image_detection)
+and [dima806/deepfake_vs_real_image_detection](https://huggingface.co/dima806/deepfake_vs_real_image_detection).
+Both upstream model cards list Apache-2.0; the deepfake author warns that model
+performance can drift on newer generators. The Whisper source is
+[openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny), also Apache-2.0.
+These source cards do not establish the transferred export's parity or accuracy.
+See DEMO_MODEL_INTEGRATION and the logged smoke results for actual runtime status.
+
 Snapshot: 2026-10-28. No model inference is verified. Every name below is a candidate; neither a research recommendation nor a public repository alone establishes suitability, license clearance, ONNX compatibility or measured accuracy. Unknown license means unknown, not permissive.
 
 ## Candidate inventory

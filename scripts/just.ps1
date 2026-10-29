@@ -21,11 +21,12 @@ try {
             $env:LIB = "$winlib;$vclib;$env:LIB"
             $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64;$env:PATH"
         }
-        $ortLib = Join-Path $root ".venv\Lib\site-packages\onnxruntime\capi"
-        if (Test-Path $ortLib) {
-            $env:PATH = "$ortLib;$env:PATH"
-            if (Test-Path (Join-Path $ortLib "onnxruntime.dll")) {
-                $env:ORT_DYLIB_PATH = Join-Path $ortLib "onnxruntime.dll"
+        foreach ($ortLib in @((Join-Path $root 'target/whisper-venv/Lib/site-packages/onnxruntime/capi'), (Join-Path $root '.venv/Lib/site-packages/onnxruntime/capi'))) {
+            if (Test-Path $ortLib) {
+                $env:PATH = "$ortLib;$env:PATH"
+                if (!$env:ORT_DYLIB_PATH -and (Test-Path (Join-Path $ortLib 'onnxruntime.dll'))) {
+                    $env:ORT_DYLIB_PATH = Join-Path $ortLib 'onnxruntime.dll'
+                }
             }
         }
         if (Test-Path "C:\msys64\ucrt64\bin\gcc.exe") {
@@ -37,7 +38,22 @@ try {
         if ($Recipe -like 'train-*') { Get-Command uv -ErrorAction Stop | Out-Null }
         switch ($Recipe) {
             'audio-worker-test' { & python -m unittest discover -s scripts/tests -p 'test_audio_worker.py'; break }
+            'models-admit-known' { & powershell -NoProfile -ExecutionPolicy Bypass -File scripts/admit-transferred-models.ps1; break }
+            'inspect-whisper' { $env:PYTHONPATH = (Join-Path $root 'target/model-verify-deps-v2'); & python scripts/inspect-whisper-graph.py; break }
+            'whisper-deps-install' {
+                $env:UV_PYTHON_INSTALL_DIR = Join-Path $root 'target/tools/python'
+                $env:UV_PYTHON_BIN_DIR = Join-Path $root 'target/tools/bin'
+                if (!(Test-Path (Join-Path $root 'target/whisper-venv/Scripts/python.exe'))) {
+                    & uv venv --python 3.14 target/whisper-venv
+                    if ($LASTEXITCODE -ne 0) { throw 'Whisper Python environment creation failed' }
+                }
+                & uv pip install --python (Join-Path $root 'target/whisper-venv/Scripts/python.exe') --only-binary ':all:' -r scripts/whisper-requirements.txt
+                break
+            }
+            'whisper-smoke' { & (Join-Path $root 'target/whisper-venv/Scripts/python.exe') scripts/whisper-runtime-smoke.py; break }
+            'python-version' { & python -c 'import sys; print(sys.version)'; break }
             'multimodal-smoke' { & cargo test -p hre-api --test multimodal_real_api --test media -- --ignored --test-threads=1; break }
+            'whisper-api-smoke' { & cargo test -p hre-api --test multimodal_real_api test_real_api_whisper_audio_speech_silence_and_invalid -- --ignored --test-threads=1; break }
             'api-test' { & cargo test -p hre-api --tests -- --test-threads=1; break }
             'api-lint' { & cargo clippy -p hre-api --all-targets -- -D warnings; break }
             'integration-smoke' { & cargo test -p hre-api --test model_runtime -- --ignored --test-threads=1; break }

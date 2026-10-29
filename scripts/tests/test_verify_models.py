@@ -115,6 +115,26 @@ class VerificationTests(unittest.TestCase):
             verifier.verify_detector(self.root)
 
     @unittest.skipIf(onnx is None, "onnx package unavailable")
+    def test_whisper_encoder_allows_only_the_declared_symbolic_batch(self):
+        self.model["task"] = "whisper"
+        self.model["outputs"] = [{"name": "last_hidden_state", "dtype": "float32", "shape": [1, 1500, 384]}]
+        self.tiny(["batch_size", "encoder_sequence_length / 2", 384], name="last_hidden_state")
+        with mock.patch.object(verifier, "verify_whisper_assets") as verify_assets:
+            verifier.verify(self.root)
+            verify_assets.assert_called_once_with(self.root)
+        self.tiny(["unknown", 1500, 384], name="last_hidden_state")
+        with self.assertRaisesRegex(ValueError, "dynamic"):
+            verifier.verify(self.root)
+        self.tiny(["batch_size", "unexpected", 384], name="last_hidden_state")
+        with self.assertRaisesRegex(ValueError, "dynamic"):
+            verifier.verify(self.root)
+
+    def test_whisper_companion_hash_is_checked(self):
+        (self.root / "whisper_decoder.onnx").write_bytes(b"wrong decoder")
+        with self.assertRaisesRegex(ValueError, "whisper_decoder.onnx SHA256 mismatch"):
+            verifier.verify_whisper_assets(self.root)
+
+    @unittest.skipIf(onnx is None, "onnx package unavailable")
     def test_real_graph_matches_and_rejects_mismatches(self):
         self.tiny([1, 2])
         verifier.verify(self.root)

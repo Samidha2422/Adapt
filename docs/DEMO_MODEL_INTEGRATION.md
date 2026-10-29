@@ -38,17 +38,20 @@ the original expected hashes; do not replace hashes merely to make verification 
 | Whisper | `whisper_encoder.onnx`, `whisper_decoder.onnx`, `whisper_tokenizer.json`, `whisper_preprocessor_config.json` |
 | Behavior | `behavior_msg.onnx`, `behavior_call.onnx`, ordered feature/baseline metadata (`features.json`) |
 
-At inspection this computer has the text/behavior artifacts, OCR detector and
-vocabulary, and Whisper encoder/decoder/tokenizer/preprocessor files. The NSFW
-and deepfake files are still 339 and 343 bytes, and the OCR recognizer is 82 KB.
-The current manifest has no Whisper task entry. Transfer the matching trained
-artifacts and manifest before claiming genuine media inference. Standalone face, tone, sentiment,
+At inspection this computer has the transferred text/behavior, NSFW, deepfake,
+OCR and Whisper artifacts. Their digests match the trainer's supplied hashes or
+pinned export reports. `just models-admit-known` checks those hashes and adds the
+matching OCR/Whisper manifest metadata, preserving a backup. Run the graph and
+runtime smoke checks before claiming inference: a matching hash alone only proves
+the file matches the recorded digest. Standalone face, tone, sentiment,
 embedding and fast/accurate text files listed as stubs by the trainer do not become
 trained models through integration.
 
-Whisper currently uses a Python ONNX worker and requires compatible `numpy`,
-`scipy`, `onnxruntime`, `transformers` and tokenizer dependencies in the engine
-environment. Short PCM WAV clips are the supported live decoder path. This is an
+Whisper currently uses a Python ONNX worker. `just whisper-deps-install` creates
+an isolated Python 3.14 environment under `target/whisper-venv`, with pinned
+`numpy`, `scipy`, `onnxruntime`, `transformers` and tokenizer dependencies. The
+engine prefers that environment. `just whisper-smoke` runs synthetic speech and
+silence through both ONNX graphs. Short PCM WAV clips are the supported live decoder path. This is an
 English Whisper-tiny pipeline; no multilingual ASR accuracy claim is made. Decoding
 is limited to the first 30 seconds and 64 generated tokens; chunk longer recordings
 before claiming complete transcription.

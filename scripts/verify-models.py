@@ -18,6 +18,7 @@ TASK_OUTPUTS = {
     "deepfake": {"probabilities": ("float32", [1, 2])},
     "face": {"boxes": ("float32", [1, 100, 4]), "scores": ("float32", [1, 100]), "valid_count": ("int64", [1])},
     "ocr": {"token_probabilities": ("float32", [1, 80, 256])},
+    "whisper": {"last_hidden_state": ("float32", [1, 1500, 384])},
     "tone": {"probabilities": ("float32", [1, 4])},
     "behavior_messages": {"probabilities": ("float32", [1, 2])},
     "behavior_calls": {"probabilities": ("float32", [1, 2])},
@@ -107,15 +108,49 @@ def verify(root):
             if not tensor.HasField("shape") or not tensor.elem_type:
                 fail(f"{identifier}: ONNX output type or shape is unavailable")
             dtype = {onnx.TensorProto.FLOAT: "float32", onnx.TensorProto.INT64: "int64"}.get(tensor.elem_type)
-            if any(not dim.HasField("dim_value") or dim.dim_value <= 0 for dim in tensor.shape.dim):
-                fail(f"{identifier}: ONNX output dimension is dynamic or unavailable")
-            shape = [dim.dim_value for dim in tensor.shape.dim]
+            shape = []
+            for index, dim in enumerate(tensor.shape.dim):
+                if dim.HasField("dim_value") and dim.dim_value > 0:
+                    shape.append(dim.dim_value)
+                elif identifier == "whisper" and index == 0 and dim.dim_param == "batch_size":
+                    shape.append(1)
+                elif identifier == "whisper" and index == 1 and dim.dim_param == "encoder_sequence_length / 2":
+                    shape.append(1500)
+                else:
+                    fail(f"{identifier}: ONNX output dimension is dynamic or unavailable")
             actual_outputs[output.name] = (dtype, shape)
         if declared != actual_outputs:
             fail(f"{identifier}: ONNX output metadata does not match task contract")
         print(f"{identifier}: SHA256 and ONNX output metadata verified")
     if "ocr" in tasks:
         verify_detector(root)
+    if "whisper" in tasks:
+        verify_whisper_assets(root)
+
+
+def verify_whisper_assets(root):
+    """Check the trainer's pinned companion assets and decoder output contract."""
+    import onnx
+    expected = {
+        "whisper_decoder.onnx": "ab79e3f2a9a3d98f159f853a3172120a38af7eb5f7863d706aa7d39c228f009e",
+        "whisper_tokenizer.json": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "whisper_preprocessor_config.json": "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d",
+    }
+    for name, digest in expected.items():
+        path = model_path(root, name)
+        hasher = hashlib.sha256()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        if hasher.hexdigest() != digest:
+            fail(f"whisper: {name} SHA256 mismatch")
+    graph = onnx.load_model(str(model_path(root, "whisper_decoder.onnx")), load_external_data=False).graph
+    outputs = {output.name: output for output in graph.output}
+    if "logits" not in outputs:
+        fail("whisper: decoder logits output missing")
+    tensor = outputs["logits"].type.tensor_type
+    if tensor.elem_type != onnx.TensorProto.FLOAT or len(tensor.shape.dim) != 3 or tensor.shape.dim[2].dim_value != 51865:
+        fail("whisper: decoder logits output contract mismatch")
 
 
 DETECTOR_EXPECTED_HASH = "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff"

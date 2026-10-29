@@ -23,6 +23,28 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static ORT_ENV: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
 
+const OCR_RECOGNIZER_HASH: &str =
+    "b7945055470411e7136c07b2ce74e4a46581723bafba44433cc01fc560f07002";
+const OCR_DETECTOR_HASH: &str = "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff";
+const OCR_VOCAB_HASH: &str = "1b4284d1c01959346570b7dccfd6660ebcafc1f2c7edacf4d0b14b48bb2f2348";
+
+fn verify_export_file(path: &Path, expected: &str) -> Result<(), ModelError> {
+    if !path.is_file() {
+        return Err(ModelError::Invalid("model export asset missing"));
+    }
+    let actual =
+        crate::hash_file(path).map_err(|_| ModelError::Invalid("model export asset unreadable"))?;
+    if actual != expected {
+        return Err(ModelError::Invalid("model export asset hash mismatch"));
+    }
+    Ok(())
+}
+
+fn detector_tensor(dtype: &ValueType, channels: i64) -> bool {
+    matches!(dtype, ValueType::Tensor { ty, shape, .. }
+        if *ty == TensorElementType::Float32 && shape.len() == 4 && shape[1] == channels)
+}
+
 fn validate_tensor(
     dtype: &ValueType,
     expected_type: TensorElementType,
@@ -666,9 +688,20 @@ impl OnnxNsfwModel {
                     model_path.display()
                 ))
             })?;
-        Ok(Self {
+        validate_session(
+            &session,
+            &[(
+                "pixel_values",
+                TensorElementType::Float32,
+                &[1, 3, 224, 224],
+            )],
+            2,
+        )?;
+        let model = Self {
             session: Mutex::new(session),
-        })
+        };
+        model.predict(Array4::zeros((1, 3, 224, 224)))?;
+        Ok(model)
     }
 
     /// Predict the [normal, nsfw] probabilities for the input image tensor [1, 3, 224, 224].
@@ -846,9 +879,20 @@ impl OnnxDeepfakeModel {
                     model_path.display()
                 ))
             })?;
-        Ok(Self {
+        validate_session(
+            &session,
+            &[(
+                "pixel_values",
+                TensorElementType::Float32,
+                &[1, 3, 224, 224],
+            )],
+            2,
+        )?;
+        let model = Self {
             session: Mutex::new(session),
-        })
+        };
+        model.predict(Array4::zeros((1, 3, 224, 224)))?;
+        Ok(model)
     }
 
     /// Predict [authentic, manipulated] probabilities for input tensor [1, 3, 224, 224].
@@ -1255,6 +1299,7 @@ impl std::fmt::Debug for OnnxOcrDetector {
 
 impl OnnxOcrDetector {
     pub fn load(model_path: &Path) -> Result<Self, ModelError> {
+        verify_export_file(model_path, OCR_DETECTOR_HASH)?;
         let env = get_or_init_ort_env()?;
         let session = Session::builder(env)
             .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
@@ -1267,9 +1312,20 @@ impl OnnxOcrDetector {
                     model_path.display()
                 ))
             })?;
-        Ok(Self {
+        if session.inputs().len() != 1
+            || session.inputs()[0].name() != "x"
+            || !detector_tensor(session.inputs()[0].dtype(), 3)
+            || session.outputs().len() != 1
+            || session.outputs()[0].name() != "sigmoid_0.tmp_0"
+            || !detector_tensor(session.outputs()[0].dtype(), 1)
+        {
+            return Err(ModelError::Invalid("OCR detector tensor metadata mismatch"));
+        }
+        let detector = Self {
             session: Mutex::new(session),
-        })
+        };
+        detector.detect(&image::DynamicImage::new_rgb8(32, 32))?;
+        Ok(detector)
     }
 
     pub fn detect(&self, img: &image::DynamicImage) -> Result<Vec<TextBoundingBox>, ModelError> {
@@ -1294,6 +1350,13 @@ impl OnnxOcrDetector {
                 ModelError::Inference(format!("failed to extract sigmoid_0.tmp_0: {e}"))
             })?;
         let slice = probs.1;
+        if slice.len() != (scaled_w as usize) * (scaled_h as usize)
+            || slice
+                .iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(ModelError::Invalid("OCR detector output mismatch"));
+        }
         let boxes = postprocess_dbnet(slice, scaled_w, scaled_h, orig_w, orig_h, 0.3, 0.5, 3, 1.6);
         Ok(boxes)
     }
@@ -1315,6 +1378,8 @@ impl std::fmt::Debug for OnnxOcrModel {
 
 impl OnnxOcrModel {
     pub fn load(model_path: &Path, vocab_path: &Path) -> Result<Self, ModelError> {
+        verify_export_file(model_path, OCR_RECOGNIZER_HASH)?;
+        verify_export_file(vocab_path, OCR_VOCAB_HASH)?;
         let env = get_or_init_ort_env()?;
         let session = Session::builder(env)
             .map_err(|e| ModelError::Inference(format!("session builder error: {e}")))?
@@ -1351,10 +1416,37 @@ impl OnnxOcrModel {
                 ModelError::Inference(format!("failed to parse OCR vocab JSON: {e}"))
             })?
         };
-        Ok(Self {
+        if vocab.len() != 256 || !vocab[0].is_empty() {
+            return Err(ModelError::Invalid("OCR vocabulary contract mismatch"));
+        }
+        if session.inputs().len() != 1
+            || session.inputs()[0].name() != "pixel_values"
+            || !validate_tensor(
+                session.inputs()[0].dtype(),
+                TensorElementType::Float32,
+                &[1, 3, 48, 320],
+            )
+            || session.outputs().len() != 1
+            || session.outputs()[0].name() != "token_probabilities"
+            || !validate_tensor(
+                session.outputs()[0].dtype(),
+                TensorElementType::Float32,
+                &[1, 80, 256],
+            )
+        {
+            return Err(ModelError::Invalid(
+                "OCR tensor metadata does not match runtime contract",
+            ));
+        }
+        let model = Self {
             session: Mutex::new(session),
             vocab,
-        })
+        };
+        let image = image::DynamicImage::new_rgb8(320, 48);
+        let tensor = preprocess_image_line(&image)
+            .map_err(|_| ModelError::Invalid("OCR warm-up image preprocessing failed"))?;
+        model.predict(tensor)?;
+        Ok(model)
     }
 
     /// Run OCR model on preprocessed tensor [1, 3, 48, 320] and decode with CTC greedy search.
@@ -1387,6 +1479,12 @@ impl OnnxOcrModel {
                 "expected 20480 output values, got {}",
                 slice.len()
             )));
+        }
+        if slice
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(ModelError::Invalid("OCR recognizer output mismatch"));
         }
 
         let (text, conf) = decode_ctc(slice, 80, &self.vocab);
@@ -1479,30 +1577,15 @@ impl OnnxOcrBackend {
         vocab_path: &Path,
         fallback: HeuristicOcrBackend,
     ) -> Result<Self, ModelError> {
-        let detector = if let Some(parent) = model_path.parent() {
-            let det_path = parent.join("ocr_detector.onnx");
-            if det_path.exists() {
-                match OnnxOcrDetector::load(&det_path) {
-                    Ok(d) => Some(Arc::new(d)),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to load ONNX OCR detector ({e}); proceeding with line recognizer only"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let model = Arc::new(OnnxOcrModel::load(model_path, vocab_path)?);
-        Ok(Self {
-            detector,
-            model: Some(model),
+        let parent = model_path
+            .parent()
+            .ok_or(ModelError::Invalid("OCR model directory missing"))?;
+        Self::load_pipeline(
+            &parent.join("ocr_detector.onnx"),
+            model_path,
+            vocab_path,
             fallback,
-        })
+        )
     }
 
     pub fn load_pipeline(
@@ -1511,11 +1594,7 @@ impl OnnxOcrBackend {
         vocab_path: &Path,
         fallback: HeuristicOcrBackend,
     ) -> Result<Self, ModelError> {
-        let detector = if detector_path.exists() {
-            Some(Arc::new(OnnxOcrDetector::load(detector_path)?))
-        } else {
-            None
-        };
+        let detector = Some(Arc::new(OnnxOcrDetector::load(detector_path)?));
         let model = Arc::new(OnnxOcrModel::load(model_path, vocab_path)?);
         Ok(Self {
             detector,
@@ -1641,7 +1720,11 @@ impl OnnxOcrBackend {
                         let (w, h) = (dynamic_img.width(), dynamic_img.height());
                         let is_tight_line = h <= 64 || (w as f32 / h as f32) >= 2.5;
                         if is_tight_line {
-                            if let Ok((raw_text, conf)) = model.recognize(bytes, declared_mime) {
+                            let result = model.recognize(bytes, declared_mime);
+                            if result.is_err() {
+                                return self.fallback.process_image(bytes, declared_mime);
+                            }
+                            if let Ok((raw_text, conf)) = result {
                                 if !raw_text.trim().is_empty() && conf >= 0.5 {
                                     let report = hre_text::analyze(&raw_text)
                                         .map_err(|err| VisionError::Ocr(err.to_string()))?;
@@ -1794,6 +1877,25 @@ pub struct OnnxWhisperModel {
     models_dir: PathBuf,
 }
 
+fn whisper_warmup_wav() -> Vec<u8> {
+    const DATA_SIZE: u32 = 32_000;
+    let mut wav = Vec::with_capacity(44 + DATA_SIZE as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + DATA_SIZE).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16_000u32.to_le_bytes());
+    wav.extend_from_slice(&32_000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&DATA_SIZE.to_le_bytes());
+    wav.resize(44 + DATA_SIZE as usize, 0);
+    wav
+}
+
 impl std::fmt::Debug for OnnxWhisperModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OnnxWhisperModel")
@@ -1807,17 +1909,32 @@ impl OnnxWhisperModel {
         let models_dir = models_dir
             .canonicalize()
             .map_err(|_| ModelError::Invalid("missing Whisper model directory"))?;
-        for name in [
-            "whisper_encoder.onnx",
-            "whisper_decoder.onnx",
-            "whisper_tokenizer.json",
-            "whisper_preprocessor_config.json",
+        for (name, hash) in [
+            (
+                "whisper_encoder.onnx",
+                "6642befb640f950d4a8cbbd17834d59e7e75f575b81ccf213e06b050623ab1dd",
+            ),
+            (
+                "whisper_decoder.onnx",
+                "ab79e3f2a9a3d98f159f853a3172120a38af7eb5f7863d706aa7d39c228f009e",
+            ),
+            (
+                "whisper_tokenizer.json",
+                "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+            ),
+            (
+                "whisper_preprocessor_config.json",
+                "a6a76d28c93edb273669eb9e0b0636a2bddbb1272c3261e47b7ca6dfdbac1b8d",
+            ),
         ] {
-            if !models_dir.join(name).is_file() {
-                return Err(ModelError::Invalid("missing local Whisper asset"));
-            }
+            let path = crate::checked_artifact_path(&models_dir, name)?;
+            verify_export_file(&path, hash)?;
         }
-        Ok(Self { models_dir })
+        let model = Self { models_dir };
+        model
+            .transcribe(&whisper_warmup_wav())
+            .map_err(|_| ModelError::Invalid("Whisper worker warm-up failed"))?;
+        Ok(model)
     }
 
     /// Transcribes PCM WAV bytes using the local Whisper worker.
@@ -1845,6 +1962,8 @@ impl OnnxWhisperModel {
             .canonicalize()
             .map_err(|_| AudioError::Transcription("worker directory unavailable".into()))?;
         let py_cmd = [
+            root.join("target/whisper-venv/Scripts/python.exe"),
+            root.join("target/whisper-venv/bin/python"),
             root.join(".venv/Scripts/python.exe"),
             root.join(".venv/bin/python"),
         ]
@@ -1873,7 +1992,8 @@ impl OnnxWhisperModel {
         drop(file);
         written.map_err(|_| AudioError::Transcription("worker input write failed".into()))?;
 
-        let mut child = Command::new(py_cmd)
+        let mut command = Command::new(py_cmd);
+        let mut child = command
             .current_dir(&root)
             .arg(root.join("scripts/test_audio_transcription.py"))
             .arg("--worker")
@@ -1945,6 +2065,16 @@ pub struct OnnxAudioBackend {
     fallback: HeuristicAudioBackend,
 }
 
+fn audio_transcript_label(transcript: &str, score: f64) -> &'static str {
+    if transcript.trim().is_empty() {
+        "audio_none"
+    } else if score >= 0.31 {
+        "audio_harassment"
+    } else {
+        "audio_benign"
+    }
+}
+
 impl OnnxAudioBackend {
     pub fn new(model: Option<Arc<OnnxWhisperModel>>, fallback: HeuristicAudioBackend) -> Self {
         Self { model, fallback }
@@ -2012,14 +2142,14 @@ impl OnnxAudioBackend {
 
                 let signal = Signal {
                     score,
-                    label: if score >= 0.31 {
-                        "audio_harassment".into()
-                    } else {
-                        "audio_benign".into()
-                    },
+                    label: audio_transcript_label(&raw_transcript, score).into(),
                     status: Status::Built,
                     backend: Backend::Onnx,
-                    confidence: 0.95,
+                    confidence: if raw_transcript.trim().is_empty() {
+                        0.0
+                    } else {
+                        0.95
+                    },
                     details,
                 };
 
@@ -2074,7 +2204,10 @@ impl OnnxAudioBackend {
             confidence: 0.0,
             details: BTreeMap::new(),
         };
-        if !report.simulated {
+        if report.simulated {
+            report.signal.status = Status::Simulated;
+            report.signal.backend = Backend::Heuristic;
+        } else {
             report.signal.status = Status::Roadmap;
             report.signal.backend = Backend::Disabled;
         }
@@ -2105,6 +2238,48 @@ impl AudioBackend for OnnxAudioBackend {
 mod tests {
     use super::*;
     use sha2::Digest;
+
+    #[test]
+    fn audio_labels_distinguish_empty_transcripts_from_scored_text() {
+        assert_eq!(audio_transcript_label("", 0.0), "audio_none");
+        assert_eq!(audio_transcript_label("  \n", 0.0), "audio_none");
+        assert_eq!(audio_transcript_label("hello", 0.0), "audio_benign");
+        assert_eq!(audio_transcript_label("text", 0.31), "audio_harassment");
+    }
+
+    #[test]
+    fn whisper_warmup_generates_one_second_of_silent_pcm_wav() {
+        let wav = whisper_warmup_wav();
+        assert_eq!(
+            hre_audio::validate_audio(&wav, "audio/wav").unwrap().mime,
+            "audio/wav"
+        );
+        assert_eq!(wav.len(), 32_044);
+        assert!(wav[44..].iter().all(|sample| *sample == 0));
+    }
+
+    #[test]
+    fn export_hash_validation_rejects_missing_and_modified_files() {
+        let dir = std::env::temp_dir().join(format!("hre-model-hash-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("asset");
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verify_export_file(&path, digest).is_err());
+        std::fs::write(&path, b"abc").unwrap();
+        assert!(verify_export_file(&path, digest).is_ok());
+        std::fs::write(&path, b"changed").unwrap();
+        assert!(verify_export_file(&path, digest).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn whisper_rejects_untrusted_companion_before_worker_start() {
+        let dir = std::env::temp_dir().join(format!("hre-whisper-hash-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("whisper_encoder.onnx"), b"invalid").unwrap();
+        assert!(OnnxWhisperModel::load(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn tensor_contract_rejects_dynamic_shapes_wrong_types_and_symbols() {
@@ -2505,6 +2680,8 @@ mod tests {
                 .expect("process audio silence");
             assert_eq!(report.raw_transcript, "");
             assert_eq!(report.signal.score, 0.0);
+            assert_eq!(report.signal.label, "audio_none");
+            assert_eq!(report.signal.confidence, 0.0);
             assert_eq!(report.signal.status, Status::Built);
             assert_eq!(report.signal.backend, Backend::Onnx);
             assert_eq!(report.tone_signal.status, Status::Roadmap);
